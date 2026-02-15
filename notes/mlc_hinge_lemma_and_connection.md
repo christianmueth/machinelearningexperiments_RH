@@ -122,6 +122,11 @@ What you need instead is the bundle of strict controls that prevent “ghost” 
 
 This is exactly the “MLC-style admissibility first, then closure” doctrine in operator language.
 
+**Important distinction (avoid category error).**
+In the RH pipeline, one can talk about “curvature-like” quantities (e.g. how phases/log-determinants bend under analytic continuation, or how the Cayley/Möbius transform wraps the real spectrum onto the unit circle, or how an invertibility margin $\delta$ controls conditioning away from Cayley bottlenecks). These are **conditioning / rigidity diagnostics**.
+
+They are not the same as a refinement contraction constant $\kappa<1$ (which would assert literal metric shrinking under iteration). On the symmetry locus $\Re(s)=1/2$, unitarity corresponds to a **neutral ($\kappa=1$) backbone**, and the pipeline’s closure comes from admissibility + canonical tracking + analytic rigidity, not from metric contraction in refinement depth.
+
 ---
 
 ## Part III. How this answers the two gap questions

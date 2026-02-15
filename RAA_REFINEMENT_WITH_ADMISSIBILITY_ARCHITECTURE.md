@@ -42,6 +42,28 @@ Pointers:
 - MLC hinge skeleton and its RH mapping: [notes/mlc_hinge_lemma_and_connection.md](notes/mlc_hinge_lemma_and_connection.md)
 - RH proof-chain scaffold: [notes/proof_roadmap.md](notes/proof_roadmap.md)
 
+### κ and “curvature”: what we do and do not claim
+
+In contraction-style refinements one often summarizes stability by a constant $\kappa$ in an inequality
+\[
+d(Rx,Ry)\le \kappa\,d(x,y).
+\]
+
+- $\kappa<1$ is **strict contraction** (hyperbolic/shrinking behavior).
+- $\kappa=1$ is **non-expansive** (isometric/neutral behavior).
+- $\kappa>1$ is **expanding** (unstable behavior).
+
+In the RH/scattering backbone, the natural symmetry locus is the critical line $\Re(s)=1/2$, where (away from poles) the scattering/Cayley object is unitary. That is structurally a **$\kappa=1$ backbone**: it preserves norm rather than shrinking distances.
+
+Separately, the pipeline uses “curvature-like” diagnostics (phase/log-derivative bending, Cayley Möbius geometry, conditioning margins $\delta$ away from bottlenecks) to detect where analytic continuation becomes ill-conditioned. These are **not** a contraction constant for refinement depth; they are conditioning/rigidity diagnostics.
+
+So the honest RAA claim this repo supports is not “we have $\kappa<1$,” but:
+
+- a non-expansive backbone on a symmetry locus,
+- admissibility-gated conditioning margins (Lipschitz control; avoid near-singular regimes),
+- canonical mode tracking (anti-swapping),
+- and a rigidity/closure principle that forces uniqueness once invariants hold.
+
 ---
 
 ## 2) What this repo already implements (that many AI stacks don’t)
