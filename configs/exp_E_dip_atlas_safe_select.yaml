@@ -1,0 +1,69 @@
+# Experiment E: dip-atlas + auto safe-rectangle suggestion + winding on suggested rect
+# Purpose: systematically exclude residual Cayley bottlenecks, then re-test winding(Q_lambda).
+
+docx_path: "playing with RH.docx"
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+Ns: [48, 56, 64, 72]
+
+boundary_frac: 0.25
+eta: 1.0
+schur_jitter: 1.0e-10
+
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+dual_scale: 1.0
+
+generator_norm: fro
+generator_norm_target: 1.0
+weight_k: 0
+
+# Candidate region to "carve" into a truly-safe sub-rectangle
+rect: [0.55, 1.55, 0.0, 7.40]
+
+# Disable other heavy diagnostics
+
+do_arg_c_emp: false
+
+do_arg_lambda_branch: true
+arg_n_edge_lambda: 3000
+lambda_branch_basis: incoming
+
+do_arg_lambda_subrects: false
+do_arg_lambda_spike_dump: false
+do_arg_lambda_hotspots: false
+
+# Dip atlas settings (coarse interior probing)
+
+do_dip_atlas: true
+# Use the same region as rect by default
+# dip_rect: [0.55, 1.55, 0.0, 7.40]
+
+dip_sigma_lines: [0.55, 0.8, 1.1, 1.4]
+dip_t_lines: [0.5, 2.0, 4.0, 6.5]
+dip_n_line: 801
+
+dip_basis: incoming
+dip_block: plus
+
+# Threshold for considering (Λ+iηI) "dangerously" near-singular
+# 1e-2 is a good first cut; lower it (1e-3) if you want more conservative exclusion.
+dip_smin_thresh: 1.0e-2
+
+# Safety margins when carving out neighborhoods
+# (These are deliberately modest; increase if suggested rectangle is still polluted.)
+dip_margin_t: 0.20
+dip_margin_sigma: 0.04
+
+dip_suggest_and_wind: true
+dip_suggest_wind_n_edge: 12000
+
+# Interior value agreement stats on the suggested rectangle
+dip_suggest_interior_n_sigma: 31
+dip_suggest_interior_n_t: 31
+
+print_progress: true
+progress_every: 200
+
+mp_dps: 50

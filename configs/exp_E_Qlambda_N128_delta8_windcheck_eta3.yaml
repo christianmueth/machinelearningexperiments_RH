@@ -1,0 +1,37 @@
+# High-resolution winding check for the potentially borderline delta=+8 at N=128.
+
+mp_dps: 80
+
+bulk_mode: two_channel_symmetric
+primes: [2,3,5,7,11,13,17,19,23]
+Ns: [128]
+
+boundary_frac: 0.25
+boundary_rounding: round
+boundary_b0_delta: 0
+
+eta: 3.0
+schur_jitter: 1.0e-10
+cayley_eps: 0.0
+
+reg_sweep_rect: [0.80, 1.40, 0.50, 6.50]
+# Tiny interior grid; we only care about winding here.
+reg_sweep_n_sigma: 3
+reg_sweep_n_t: 3
+
+reg_sweep_etas: [3.0]
+reg_sweep_jitters: [1.0e-10]
+reg_sweep_cayley_eps: [0.0]
+reg_sweep_b0_deltas: [8]
+
+reg_sweep_do_winding: true
+reg_sweep_wind_n_edge: 6000
+reg_sweep_wind_N: 128
+reg_sweep_wind_basis: incoming
+reg_sweep_wind_block: plus
+
+do_regularization_sweep_only: true
+reg_sweep_resume: false
+
+print_progress: true
+progress_every: 0

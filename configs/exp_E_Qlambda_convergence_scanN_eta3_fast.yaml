@@ -1,0 +1,32 @@
+# Dense N-neighborhood convergence scan (fast): eta locked to 3.
+# Purpose: detect resonance/aliasing periodicity in N (mod 16/32/64) without huge runtime.
+
+mp_dps: 50
+
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+
+# 80–160 step 8, then 160–256 step 16
+Ns: [80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 176, 192, 208, 224, 240, 256]
+
+boundary_frac: 0.25
+eta: 3.0
+schur_jitter: 1.0e-10
+cayley_eps: 0.0
+
+do_convergence_sweep_only: true
+
+# Same safe rectangle, coarser grid for speed
+convergence_rect: [0.55, 1.06, 3.3855, 3.6815]
+convergence_n_sigma: 21
+convergence_n_t: 21
+
+# Winding sanity check per N
+convergence_do_winding: true
+convergence_wind_basis: incoming
+convergence_wind_block: plus
+convergence_wind_n_edge: 600
+
+print_progress: false

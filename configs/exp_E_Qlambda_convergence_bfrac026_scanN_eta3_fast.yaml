@@ -1,0 +1,25 @@
+# Boundary-fraction perturbation: bfrac=0.26, eta=3 (fast grid)
+
+mp_dps: 50
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+Ns: [80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160]
+
+boundary_frac: 0.26
+eta: 3.0
+schur_jitter: 1.0e-10
+cayley_eps: 0.0
+
+do_convergence_sweep_only: true
+convergence_rect: [0.55, 1.06, 3.3855, 3.6815]
+convergence_n_sigma: 21
+convergence_n_t: 21
+
+convergence_do_winding: true
+convergence_wind_basis: incoming
+convergence_wind_block: plus
+convergence_wind_n_edge: 600
+
+print_progress: false

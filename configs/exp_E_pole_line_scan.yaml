@@ -1,0 +1,45 @@
+# Experiment E: pole-line scan only (σ fixed, scan t for multiple N)
+# Purpose: classify whether Cayley near-singularities move with N (spurious) or stabilize (structural).
+
+docx_path: "playing with RH.docx"
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+Ns: [56, 60, 64, 68, 72]
+
+boundary_frac: 0.25
+eta: 1.0
+schur_jitter: 1.0e-10
+
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+dual_scale: 1.0
+
+generator_norm: fro
+generator_norm_target: 1.0
+weight_k: 0
+
+# Keep the rest minimal/fast: disable heavy rectangle windings and hotspot scans.
+do_arg_c_emp: false
+do_arg_lambda_branch: false
+do_arg_lambda_subrects: false
+do_arg_lambda_spike_dump: false
+do_arg_lambda_hotspots: false
+
+# Pole-line scan configuration
+
+do_pole_line_scan: true
+pole_line_sigma: 1.075
+pole_line_t_min: 7.5
+pole_line_t_max: 10.0
+pole_line_nt: 501
+pole_line_basis: incoming
+pole_line_block: plus
+pole_line_include_free: true
+pole_line_include_phi: true
+
+# Progress prints (this can still take a while)
+print_progress: true
+progress_every: 50
+
+mp_dps: 50

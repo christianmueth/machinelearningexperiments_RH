@@ -1,0 +1,38 @@
+# Multi-N boundary-size resonance scan with small delta window.
+
+mp_dps: 80
+
+bulk_mode: two_channel_symmetric
+primes: [2,3,5,7,11,13,17,19,23]
+Ns: [120,124,128,132,136]
+
+boundary_frac: 0.25
+boundary_rounding: round
+boundary_b0_delta: 0
+
+eta: 3.0
+schur_jitter: 1.0e-10
+cayley_eps: 0.0
+
+reg_sweep_rect: [0.80, 1.40, 0.50, 6.50]
+# Slightly lighter grid for multi-N mapping
+reg_sweep_n_sigma: 17
+reg_sweep_n_t: 17
+
+reg_sweep_etas: [3.0]
+reg_sweep_jitters: [1.0e-10]
+reg_sweep_cayley_eps: [0.0]
+reg_sweep_b0_deltas: [-8,-7,-6,-5,-4,-3,-2,-1,0,1,2,3,4,5,6,7,8]
+
+# Winding check on representative N=128
+reg_sweep_do_winding: true
+reg_sweep_wind_n_edge: 1200
+reg_sweep_wind_N: 128
+reg_sweep_wind_basis: incoming
+reg_sweep_wind_block: plus
+
+do_regularization_sweep_only: true
+reg_sweep_resume: true
+
+print_progress: true
+progress_every: 0

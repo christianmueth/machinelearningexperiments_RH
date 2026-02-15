@@ -1,0 +1,34 @@
+# Convergence sweep on a fixed, already-verified safe rectangle, with eta locked.
+# Purpose: once normalization is fixed canonically (eta=3), test whether
+# the post-normalization shape error |Q/cN - 1| converges with N.
+
+mp_dps: 50
+
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+
+# Wider N sweep (adjust if runtime is too high)
+Ns: [48, 56, 64, 72, 96, 128, 160, 192, 256]
+
+boundary_frac: 0.25
+eta: 3.0
+schur_jitter: 1.0e-10
+cayley_eps: 0.0
+
+# Only run the convergence sweep (skip spine, dip atlas, pole scans, etc.)
+do_convergence_sweep_only: true
+
+# Safe rectangle from dip atlas (Feb 11 run)
+convergence_rect: [0.55, 1.06, 3.3855, 3.6815]
+convergence_n_sigma: 31
+convergence_n_t: 31
+
+# Also log a winding sanity check per N (cheap boundary sampling)
+convergence_do_winding: true
+convergence_wind_basis: incoming
+convergence_wind_block: plus
+convergence_wind_n_edge: 800
+
+print_progress: false

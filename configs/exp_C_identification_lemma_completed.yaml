@@ -1,0 +1,46 @@
+# Experiment C: "completed" variant
+# Uses dual completion in the bulk AND applies a holomorphic prefactor (2s-1)
+# to Lambda before Cayley. This aims to turn an even Lambda(s)=Lambda(1-s)
+# into an odd Lambda~(s)=-(Lambda~)(1-s), so that S(1-s)=S(s)^{-1}.
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+prime_support_k: 9
+prime_support_mode: prefix
+
+Ns: [48, 64]
+
+sigmas: [0.3, 0.5, 0.7, 1.2]
+t_max: 10.0
+t_steps: 81
+
+boundary_frac: 0.25
+eta: 1.0
+schur_jitter: 1.0e-10
+
+prime_scale: 1.0
+comp_scale: 1.0
+
+generator_norm: fro
+generator_norm_target: 1.0
+
+completion_mode: dual_1_minus_s
+dual_scale: 1.0
+
+# NEW: lambda prefactor applied before Cayley
+lambda_prefactor: 2s-1
+
+normalize_free: true
+compare_modular: true
+
+s0: 2.0
+
+rects:
+  - [0.55, 1.60, 0.0, 10.0]
+arg_h: 1.0e-5
+arg_n_edge: 800
+
+mp_dps: 50
+
+do_fe_unitarity: true
+do_arg_principle: true
+do_quotient: true

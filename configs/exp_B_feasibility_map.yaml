@@ -1,0 +1,54 @@
+# Combined B feasibility-map sweep.
+# Keep this SMALL for the first pass; scale up after inspecting stability.
+
+primes: [2, 3, 5, 7, 11]
+composites: []
+
+# Prime support sweep: run the same grid for multiple prefix sizes.
+# If primes list is shorter than max size, it is extended by generating primes.
+prime_support_mode: prefix  # prefix | first_primes
+prime_support_sizes: [5]
+
+# grid (doc suggested larger; start small and grow)
+Ns: [16, 24, 32, 48, 64]
+
+sigmas: [0.55, 0.60, 0.65]
+Es: [0.0]
+
+betas: [0.0, 0.5, 1.0]
+
+boundary_fracs: [0.10, 0.20, 0.25]
+
+# DN/Schur + Cayley backbone
+use_schur: true
+eta: 1.0
+schur_jitter: 0.0  # keep fixed in main runs; sweep separately
+
+# normalization + injection controls
+prime_scale: 1.0
+comp_scale: 1.0
+composites_mode: all
+match_comp_to_prime: false
+
+# generator normalization (helps prevent “more terms = bigger operator” trivially)
+# options: null, fro, op
+generator_norm: fro
+generator_norm_target: 1.0
+
+# reference subtraction axis
+# options: none, diag
+reference_subtraction: diag
+
+# singular values to record (wide sv_abs_k / sv_rel_k columns)
+r: 10
+
+# Trust gate + top pockets
+# (set these to finite values once you see scaling ranges)
+gate_max_hermitian_err: 1e99
+gate_max_unitarity_err: 1e99
+gate_max_cond: 1e99
+
+
+score_alpha_unitarity: 1.0
+score_beta_hs_delta: 1.0
+top_pockets_k: 10

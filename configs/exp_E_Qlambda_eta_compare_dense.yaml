@@ -1,0 +1,39 @@
+# Dense-grid comparison: eta=3 vs eta=10 on the fixed safe rectangle.
+# Adds robust tail metrics (p95 + top-5 mean) and uses a denser interior grid.
+
+mp_dps: 50
+
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+Ns: [96, 128]
+
+boundary_frac: 0.25
+
+# Baseline values (overridden by sweep lists)
+eta: 3.0
+schur_jitter: 1.0e-10
+cayley_eps: 0.0
+
+do_regularization_sweep_only: true
+reg_sweep_resume: true
+
+# Same safe rectangle, denser grid
+reg_sweep_rect: [0.55, 1.06, 3.3855, 3.6815]
+reg_sweep_n_sigma: 31
+reg_sweep_n_t: 31
+
+# Compare only these etas
+reg_sweep_jitters: [1.0e-10]
+reg_sweep_cayley_eps: [0.0]
+reg_sweep_etas: [3.0, 10.0]
+
+# Winding check sanity check (per-eta)
+reg_sweep_do_winding: true
+reg_sweep_wind_N: 96
+reg_sweep_wind_basis: incoming
+reg_sweep_wind_block: plus
+reg_sweep_wind_n_edge: 1200
+
+print_progress: false

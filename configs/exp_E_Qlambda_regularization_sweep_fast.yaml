@@ -1,0 +1,41 @@
+# Regularization sweep (fast / crash-resistant):
+# - Smaller interior grid
+# - Fewer N values
+# - Same safe rectangle
+# Intended for quickly finding a stabilizer sweet spot.
+
+mp_dps: 50
+
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+Ns: [96, 128]
+
+boundary_frac: 0.25
+eta: 1.0
+schur_jitter: 1.0e-10
+cayley_eps: 0.0
+
+# Only run the reg sweep.
+do_regularization_sweep_only: true
+reg_sweep_resume: true
+
+# Safe rectangle from dip atlas (Feb 11 run)
+reg_sweep_rect: [0.55, 1.06, 3.3855, 3.6815]
+reg_sweep_n_sigma: 21
+reg_sweep_n_t: 21
+
+# Parameter grid
+reg_sweep_jitters: [1.0e-12, 1.0e-10, 1.0e-8, 1.0e-6]
+reg_sweep_cayley_eps: [0.0, 1.0e-10, 1.0e-8, 1.0e-6]
+reg_sweep_etas: [1.0]
+
+# Winding check (cheap representative sanity check)
+reg_sweep_do_winding: true
+reg_sweep_wind_N: 96
+reg_sweep_wind_basis: incoming
+reg_sweep_wind_block: plus
+reg_sweep_wind_n_edge: 800
+
+print_progress: false

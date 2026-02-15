@@ -1,0 +1,11 @@
+# Experiment B3: logdet(I+K) stability map
+primes: [2, 3, 5, 7, 11]
+weight_k: 0
+prime_scale: 1.0
+
+Ns: [256, 512, 1024]
+boundary_frac: 0.125
+
+betas: [0.0, 0.5, 1.0]
+sigmas: [1.2, 1.0, 0.8, 0.6]
+E: 0.0

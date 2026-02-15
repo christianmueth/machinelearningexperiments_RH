@@ -1,0 +1,44 @@
+# Experiment C variant: dual completion with an explicit involution J on the dual term
+# (tries to avoid trivial S(s)≈S(1-s) when generators are symmetric).
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+prime_support_k: 9
+prime_support_mode: prefix
+
+Ns: [48, 64]
+
+sigmas: [0.3, 0.5, 0.7, 1.2]
+t_max: 10.0
+t_steps: 81
+
+boundary_frac: 0.25
+eta: 1.0
+schur_jitter: 1.0e-10
+
+prime_scale: 1.0
+comp_scale: 1.0
+
+generator_norm: fro
+generator_norm_target: 1.0
+
+completion_mode: dual_1_minus_s_J
+# dual_scale multiplies the dual/adjoint term
+# (keep at 1.0 unless sweeping)
+dual_scale: 1.0
+
+normalize_free: true
+compare_modular: true
+
+s0: 2.0
+
+# argument principle
+rects:
+  - [0.55, 1.60, 0.0, 10.0]
+arg_h: 1.0e-5
+arg_n_edge: 800
+
+mp_dps: 50
+
+do_fe_unitarity: true
+do_arg_principle: true
+do_quotient: true

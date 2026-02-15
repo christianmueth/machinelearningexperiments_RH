@@ -1,0 +1,52 @@
+# Convergence sweep with boundary auto-pick using worst-channel objective + top5 guard.
+#
+# Objective: minimize worst-channel p95; tie-break by worst-channel top5 then worst-channel median.
+# Guard: enforce worst-channel top5 does not regress relative to delta=0 (b*), i.e. top5 <= top5_star.
+#
+# This targets the observed N=48 behavior where p95 improves but top5 worsens.
+
+mp_dps: 80
+
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+Ns: [48, 56, 64, 72, 96, 128]
+
+boundary_frac: 0.25
+eta: 3.0
+schur_jitter: 1.0e-10
+
+do_convergence_sweep_only: true
+
+convergence_rect: [0.55, 1.06, 3.3855, 3.6815]
+convergence_n_sigma: 31
+convergence_n_t: 31
+
+boundary_autopick: true
+boundary_autopick_window: 2
+
+boundary_autopick_channel_mode: worst_channel
+boundary_autopick_rank_mode: p95_lex_top5
+
+# Top5 guard enabled: strict no-regression vs delta=0.
+boundary_autopick_top5_guard: true
+boundary_autopick_top5_guard_rel: 0.0
+boundary_autopick_top5_guard_abs: 0.0
+
+# Legacy audit fields
+boundary_autopick_objective: p95
+boundary_autopick_tiebreak: median
+
+boundary_autopick_gap_gamma: 0.002
+boundary_autopick_basis: incoming
+boundary_autopick_block: plus
+
+boundary_autopick_eval_n_sigma: 21
+boundary_autopick_eval_n_t: 21
+
+boundary_autopick_wind_n_edge_stage1: 1200
+boundary_autopick_wind_n_edge_stage2: 6000
+boundary_autopick_wind_confirm_topk: 2
+
+print_progress: false

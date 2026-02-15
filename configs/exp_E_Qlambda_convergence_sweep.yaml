@@ -1,0 +1,44 @@
+# Cheap convergence sweep on a fixed, already-verified safe rectangle.
+# Computes interior-grid value agreement for Q_lambda(s)=lambda(s)/phi_mod(s),
+# plus best-fit constant c_N and post-normalization errors.
+
+mp_dps: 80
+
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+Ns: [48, 56, 64, 72, 96, 128]
+
+boundary_frac: 0.25
+eta: 3.0
+schur_jitter: 1.0e-10
+
+# Only run the convergence sweep (skip spine, dip atlas, pole scans, winding, etc.).
+do_convergence_sweep_only: true
+
+# Safe rectangle from dip atlas (Feb 11 run): sigma in [0.55, 1.06], t in [3.3855, 3.6815]
+convergence_rect: [0.55, 1.06, 3.3855, 3.6815]
+convergence_n_sigma: 31
+convergence_n_t: 31
+
+# Boundary auto-pick: choose b0 in {b* - 2, ..., b* + 2} minimizing tail error,
+# subject to gap and confirmed winding=0.
+boundary_autopick: true
+boundary_autopick_window: 2
+boundary_autopick_objective: p95
+boundary_autopick_tiebreak: median
+boundary_autopick_gap_gamma: 0.002
+boundary_autopick_basis: incoming
+boundary_autopick_block: plus
+
+# Use a moderate interior grid for candidate scoring (cheaper than 31x31, still robust).
+boundary_autopick_eval_n_sigma: 21
+boundary_autopick_eval_n_t: 21
+
+# Two-stage winding verification.
+boundary_autopick_wind_n_edge_stage1: 1200
+boundary_autopick_wind_n_edge_stage2: 6000
+boundary_autopick_wind_confirm_topk: 2
+
+print_progress: false

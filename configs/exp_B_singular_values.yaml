@@ -1,0 +1,12 @@
+# Experiment B2: singular value decay
+primes: [2, 3, 5, 7, 11]
+weight_k: 0
+prime_scale: 1.0
+
+Ns: [256, 512, 1024]
+boundary_frac: 0.125
+
+beta: 0.5
+sigma: 0.8
+E: 0.0
+r: 50

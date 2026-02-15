@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+
+# Virtual environments
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local experiment outputs / run artifacts
+out_*/
+runs/
+
+# Common large/binary artifacts (keep repo lean)
+*.csv
+*.tsv
+*.parquet
+*.npz
+*.npy
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+
+*.docx
+*.odt
+*.pdf
+*.xlsx
+*.pptx
+
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.mp4
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

@@ -1,0 +1,119 @@
+# Experiment E: end-of-doc validation track for "playing with RH.docx"
+
+# Point to the updated docx so the run snapshot records its mtime/size
+# (this is just provenance; the experiment doesn't parse the docx)
+docx_path: "playing with RH.docx"
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+Ns: [48, 64]
+
+boundary_frac: 0.25
+eta: 1.0
+schur_jitter: 1.0e-10
+
+# bulk assembly
+# bulk_mode controls the structural duality realization:
+# - one_channel: original toy model
+# - two_channel_symmetric: explicit s/(1-s) channel-swap duality with symmetric generators
+bulk_mode: two_channel_symmetric
+
+completion_mode: dual_1_minus_s
+# completion_mode: none
+# completion_mode: dual_1_minus_s_J
+
+dual_scale: 1.0
+
+# generator normalization keeps the comparison stable across N
+# (matches prior harness settings)
+generator_norm: fro
+generator_norm_target: 1.0
+weight_k: 0
+
+# grid for spine checks
+sigmas: [0.3, 0.5, 0.7, 1.2]
+# Densified t-grid (0..2 step 0.1, 2..5 step 0.25, 5..10 step 0.5)
+t_grid:
+  - 0.0
+  - 0.1
+  - 0.2
+  - 0.3
+  - 0.4
+  - 0.5
+  - 0.6
+  - 0.7
+  - 0.8
+  - 0.9
+  - 1.0
+  - 1.1
+  - 1.2
+  - 1.3
+  - 1.4
+  - 1.5
+  - 1.6
+  - 1.7
+  - 1.8
+  - 1.9
+  - 2.0
+  - 2.25
+  - 2.5
+  - 2.75
+  - 3.0
+  - 3.25
+  - 3.5
+  - 3.75
+  - 4.0
+  - 4.25
+  - 4.5
+  - 4.75
+  - 5.0
+  - 5.5
+  - 6.0
+  - 6.5
+  - 7.0
+  - 7.5
+  - 8.0
+  - 8.5
+  - 9.0
+  - 9.5
+  - 10.0
+
+# normalization point (doc suggests a safe point where both sides converge)
+s0: 2.0
+
+# divisor/argument principle rectangle for Q(s)
+rect: [0.55, 1.60, 0.0, 10.0]
+arg_h: 1.0e-5
+arg_n_edge: 800
+
+# Optional: winding estimate for Q_lambda(s) = lambda_track(s)/phi_mod(s)
+# (phase-unwrapping along the rectangle boundary; avoids dlog branch issues)
+do_arg_lambda_branch: true
+arg_n_edge_lambda: 3000
+lambda_branch_basis: incoming  # incoming | rel
+
+# Optional: localize winding by splitting the rectangle into sub-rectangles.
+do_arg_lambda_subrects: false
+arg_n_edge_lambda_subrect: 900
+arg_lambda_subrect_sigma_edges: [0.55, 1.075, 1.3375, 1.60]
+arg_lambda_subrect_t_edges: [0.0, 5.0, 7.5, 10.0]
+
+# Dump top-K |Q_lambda| boundary spikes with classification sentinels.
+do_arg_lambda_spike_dump: true
+arg_lambda_spike_topk: 25
+
+# Hotspot refinement scans (small rectangles around suspected poles).
+do_arg_lambda_hotspots: true
+arg_lambda_hotspots:
+  - {name: hot_sigma1p075_t9p3222, sigma: 1.075, t: 9.3222, ds: 0.03, dt: 0.25, n_edge: 1200}
+  - {name: hot_sigma1p6_t7p5, sigma: 1.6, t: 7.5, ds: 0.03, dt: 0.25, n_edge: 1200}
+
+# Targeted rectangle scans (lets us put the split line on the boundary).
+arg_lambda_extra_rects:
+  - {name: splitline_sigma1p075_t7p5_10, rect: [0.55, 1.075, 7.5, 10.0], n_edge: 1500}
+  - {name: upperright_sigma1p3375_1p6_t5_7p5, rect: [1.3375, 1.60, 5.0, 7.5], n_edge: 1500}
+
+# Progress prints for long boundary loops
+print_progress: true
+progress_every: 200
+
+mp_dps: 50

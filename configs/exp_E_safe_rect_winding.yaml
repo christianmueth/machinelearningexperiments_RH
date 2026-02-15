@@ -1,0 +1,52 @@
+# Experiment E: Q_lambda winding on a "safe rectangle" excluding the drifting Cayley-resonance band.
+# Goal: check winding(Q_lambda) collapses toward 0 away from near-singular (Λ+iI).
+
+docx_path: "playing with RH.docx"
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+Ns: [48, 56, 64, 72]
+
+boundary_frac: 0.25
+eta: 1.0
+schur_jitter: 1.0e-10
+
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+dual_scale: 1.0
+
+generator_norm: fro
+generator_norm_target: 1.0
+weight_k: 0
+
+# Keep the spine checks lightweight
+sigmas: [0.5]
+t_grid: [0.0]
+
+s0: 2.0
+
+# SAFE RECTANGLE: exclude t in [7.5, 10]
+rect: [0.55, 1.60, 0.0, 7.5]
+
+# Disable determinant-based argument principle
+#do_arg_c_emp: true
+# Default is true in the experiment; explicitly disable for this run
+
+do_arg_c_emp: false
+
+# Enable Q_lambda winding (phase unwrap) on this safe rectangle
+
+do_arg_lambda_branch: true
+arg_n_edge_lambda: 2500
+lambda_branch_basis: incoming
+
+# Disable localization/hotspots/spike dumps for speed
+
+do_arg_lambda_subrects: false
+do_arg_lambda_spike_dump: false
+do_arg_lambda_hotspots: false
+
+print_progress: true
+progress_every: 250
+
+mp_dps: 50

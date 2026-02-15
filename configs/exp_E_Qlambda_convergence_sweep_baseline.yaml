@@ -1,0 +1,27 @@
+# Baseline convergence sweep (no boundary auto-pick)
+# Same rectangle/grid as the autopick run for an apples-to-apples comparison.
+
+mp_dps: 80
+
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+Ns: [48, 56, 64, 72, 96, 128]
+
+boundary_frac: 0.25
+eta: 3.0
+schur_jitter: 1.0e-10
+
+# Only run the convergence sweep.
+do_convergence_sweep_only: true
+
+# Safe rectangle from dip atlas (Feb 11 run): sigma in [0.55, 1.06], t in [3.3855, 3.6815]
+convergence_rect: [0.55, 1.06, 3.3855, 3.6815]
+convergence_n_sigma: 31
+convergence_n_t: 31
+
+# Disable boundary auto-pick.
+boundary_autopick: false
+
+print_progress: false

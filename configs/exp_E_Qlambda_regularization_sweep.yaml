@@ -1,0 +1,38 @@
+# Regularization sweep on a fixed safe rectangle.
+# Sweeps Schur jitter and Cayley epsilon (solve-regularizer) to see whether
+# the residual holomorphic shape error in Q_lambda is tunable / stabilizer-driven.
+
+mp_dps: 50
+
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+Ns: [64, 96, 128]
+
+boundary_frac: 0.25
+eta: 1.0
+schur_jitter: 1.0e-10
+cayley_eps: 0.0
+
+# Only run the reg sweep.
+do_regularization_sweep_only: true
+
+# Safe rectangle from dip atlas (Feb 11 run)
+reg_sweep_rect: [0.55, 1.06, 3.3855, 3.6815]
+reg_sweep_n_sigma: 31
+reg_sweep_n_t: 31
+
+# Parameter grid
+reg_sweep_jitters: [1.0e-12, 1.0e-10, 1.0e-8, 1.0e-6]
+reg_sweep_cayley_eps: [0.0, 1.0e-10, 1.0e-8, 1.0e-6]
+reg_sweep_etas: [1.0]
+
+# Winding check (cheap representative sanity check)
+reg_sweep_do_winding: true
+reg_sweep_wind_N: 96
+reg_sweep_wind_basis: incoming
+reg_sweep_wind_block: plus
+reg_sweep_wind_n_edge: 1200
+
+print_progress: false

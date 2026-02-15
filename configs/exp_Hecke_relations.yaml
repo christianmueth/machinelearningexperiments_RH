@@ -1,0 +1,18 @@
+# Algebra-only Hecke sanity checks.
+
+Ns: [32, 48, 64, 96, 128]
+weight_k: 0
+
+# pairs (m,n) to test the Hecke relation on
+pairs:
+  - [2, 3]
+  - [2, 4]
+  - [3, 6]
+  - [4, 6]
+  - [6, 10]
+
+# (p, rmax) prime-power recursion checks
+prime_power_tests:
+  - [2, 6]
+  - [3, 5]
+  - [5, 4]

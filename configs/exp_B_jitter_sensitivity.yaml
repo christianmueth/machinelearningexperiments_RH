@@ -1,0 +1,29 @@
+# Small diagnostic sweep: schur_jitter sensitivity at a few representative points.
+
+primes: [2, 3, 5, 7, 11]
+prime_support_k: 5
+
+Ns: [24, 64]
+
+sigmas: [0.60, 0.70]
+Es: [0.0]
+
+betas: [0.0, 1.0]
+
+boundary_fracs: [0.20, 0.3333333333]
+
+eta: 1.0
+jitters: [0.0, 1e-12, 1e-10, 1e-8]
+
+reference_subtraction: diag
+r: 10
+
+# Keep normalization consistent with main feasibility map
+prime_scale: 1.0
+comp_scale: 1.0
+composites: []
+composites_mode: all
+match_comp_to_prime: false
+
+generator_norm: fro
+generator_norm_target: 1.0

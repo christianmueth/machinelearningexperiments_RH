@@ -1,0 +1,52 @@
+# Experiment C: VSGPT analytic identification lemma checklist
+
+# primes / support
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+prime_support_mode: prefix   # prefix | first_primes
+prime_support_k: 9
+
+# truncation sweep
+Ns: [48, 64]
+
+# FE/unitarity grid: s = sigma + i t
+sigmas: [0.3, 0.5, 0.7, 1.2]
+t_max: 20.0
+t_steps: 41
+
+# DN/Schur + Cayley
+boundary_frac: 0.25
+eta: 1.0
+schur_jitter: 1e-10
+
+# normalization
+normalize_free: true
+compare_modular: true
+s0: 2.0
+mp_dps: 50
+
+# bulk normalization / completion
+prime_scale: 1.0
+comp_scale: 0.0
+
+generator_norm: fro
+generator_norm_target: 1.0
+
+# Completion mode: designed to give Hermitian-ish DN on critical line without explicit conjugation
+completion_mode: dual_1_minus_s
+dual_scale: 1.0
+
+# which checklist parts to run
+#do_fe_unitarity: true
+#do_arg_principle: true
+#do_quotient: true
+
+do_fe_unitarity: true
+do_arg_principle: true
+do_quotient: true
+
+# argument principle rectangles (sigma_min, sigma_max, t_min, t_max)
+rects:
+  - [0.55, 1.60, 0.0, 10.0]
+
+arg_h: 1e-5
+arg_n_edge: 800

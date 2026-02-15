@@ -1,0 +1,43 @@
+# Experiment E: safer rectangle winding (avoid the upper-right Cayley bottleneck at (sigma~1.6,t~7.5)).
+# Changes vs v1: pull back sigma_max and t_max slightly to avoid grazing the known singular corner.
+
+docx_path: "playing with RH.docx"
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+Ns: [48, 56, 64, 72]
+
+boundary_frac: 0.25
+eta: 1.0
+schur_jitter: 1.0e-10
+
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+dual_scale: 1.0
+
+generator_norm: fro
+generator_norm_target: 1.0
+weight_k: 0
+
+sigmas: [0.5]
+t_grid: [0.0]
+
+s0: 2.0
+
+# Safer rectangle: exclude t near 7.5 and sigma near 1.6
+rect: [0.55, 1.55, 0.0, 7.40]
+
+do_arg_c_emp: false
+
+do_arg_lambda_branch: true
+arg_n_edge_lambda: 3500
+lambda_branch_basis: incoming
+
+do_arg_lambda_subrects: false
+do_arg_lambda_spike_dump: false
+do_arg_lambda_hotspots: false
+
+print_progress: true
+progress_every: 350
+
+mp_dps: 50

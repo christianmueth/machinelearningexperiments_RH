@@ -1,0 +1,43 @@
+# Targeted N=128 boundary-size resonance test: sweep b0 by discrete deltas.
+# Uses regularization sweep harness but keeps jitter/eps fixed.
+
+mp_dps: 80
+
+bulk_mode: two_channel_symmetric
+primes: [2,3,5,7,11,13,17,19,23]
+Ns: [128]
+
+# Base boundary selection (before delta); delta is applied on b0 (one-channel boundary size).
+boundary_frac: 0.25
+boundary_rounding: round
+boundary_b0_delta: 0
+
+# Canonical normalization
+eta: 3.0
+schur_jitter: 1.0e-10
+cayley_eps: 0.0
+
+# Safe rectangle (use your current dip-atlas suggested rectangle if different)
+reg_sweep_rect: [0.80, 1.40, 0.50, 6.50]
+reg_sweep_n_sigma: 21
+reg_sweep_n_t: 21
+
+# Sweep only b0 deltas; keep other regularizers fixed.
+reg_sweep_etas: [3.0]
+reg_sweep_jitters: [1.0e-10]
+reg_sweep_cayley_eps: [0.0]
+reg_sweep_b0_deltas: [-2, -1, 0, 1, 2]
+
+# Winding check stays on, to confirm divisor-clean stays true under b shifts.
+reg_sweep_do_winding: true
+reg_sweep_wind_n_edge: 2000
+reg_sweep_wind_N: 128
+reg_sweep_wind_basis: incoming
+reg_sweep_wind_block: plus
+
+# Run mode
+print_progress: true
+progress_every: 0
+
+do_regularization_sweep_only: true
+reg_sweep_resume: true

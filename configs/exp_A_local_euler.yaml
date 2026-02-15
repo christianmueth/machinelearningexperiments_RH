@@ -1,0 +1,14 @@
+# Experiment A: local Euler-architecture validations
+N: 256
+weight_k: 0
+s: 0.8
+
+primes: [2, 3, 5, 7, 11]
+composites: [4, 6, 8, 9, 10, 12]
+prime_scale: 1.0
+comp_scale: 1.0
+
+ladder_prime: 2
+ladder_m_max: 12
+
+two_primes: [2, 3]
