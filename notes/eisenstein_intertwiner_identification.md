@@ -214,6 +214,63 @@ See also: `notes/hypotheses_to_artifacts.md` for how the safe-rectangle hypothes
 
 ---
 
+## 6) Referee checklist (minimal hypotheses to verify)
+
+This section spells out, in one place, the exact hypotheses that must be checked to apply the cited Weyl-function \(\leftrightarrow\) scattering results to the modular cusp model **without** any numerical input.
+
+### H1 (Geometric operator is the modular cusp Laplacian)
+
+- The bulk operator is the Laplace–Beltrami operator \(\Delta\) on \(X=\mathrm{SL}(2,\mathbb{Z})\backslash\mathbb{H}\) (or the exactly specified 1-cusp hyperbolic surface under study), considered with spectral parameter \(s\) via \((\Delta-s(1-s))u=0\).
+- A cusp cross-section \(\partial X_Y\cong \mathbb{R}/\mathbb{Z}\) (horocycle cut) is fixed once and for all.
+
+### H2 (Extension pair and boundary model are specified)
+
+- Specify the symmetric operator \(A\) (e.g. the minimal Laplacian on the cut manifold) and the two self-adjoint realizations \(A_0\) and \(A_\Theta\) whose scattering system is being described.
+- State explicitly how the impedance/Cayley parameter \(\eta\) corresponds to the extension parameter \(\Theta\) (this is where different scattering normalizations can enter).
+
+### H3 (Boundary space and trace maps)
+
+- The boundary space is \(\mathcal{H}_\partial=L^2(\partial X_Y)\) (or \(\mathcal{H}_\partial^{(2)}\cong L^2(\partial X_Y)^{\oplus 2}\) in the two-channel setting).
+- The boundary maps \(\Gamma_0\) (Dirichlet trace) and \(\Gamma_1\) (Neumann/flux trace) are specified on the maximal domain so that the relevant Green identity holds.
+- Fix the boundary pairing / flux convention used to define adjoints (this is the only place sign conventions can materially affect formulas).
+
+### H4 (Weyl function equals the DN/Weyl operator used)
+
+- Verify that the Weyl function \(M(s)\) in the cited boundary triple framework coincides with the DN/Weyl operator \(\Lambda(s)\) used in Task A (or differs from it by a fixed, declared linear fractional transform).
+- Conclude meromorphic continuation and the required adjointness identities from the standard theory (no RH input is needed here).
+
+### H5 (Scattering matrix formula matches the Cayley transform)
+
+- Using the cited Weyl-function scattering formula, show that the scattering matrix \(\mathcal{S}(s)\) for the extension pair is a linear fractional transform of \(\Lambda(s)\).
+- Match this transform to the Cayley form
+  \[
+  S_\eta(s)=(\Lambda(s)-i\eta I)(\Lambda(s)+i\eta I)^{-1}
+  \]
+  up to an \(s\)-independent unitary change of boundary basis.
+
+This is exactly the black-box content of Behrndt–Malamud–Neidhardt (and related extension-theoretic scattering references).
+
+### H6 (Normalization mismatch is only an \(s\)-independent scalar)
+
+- Check that any remaining mismatch between the DN/Cayley convention and the Eisenstein/scattering convention is an \(s\)-independent scalar (typically unit-modulus), coming from boundary basis / flux normalization.
+- Fix it by one basepoint normalization \(Q(s_0)=1\) as in §3.
+
+### H7 (Fourier-mode invariance; constant mode is the cusp channel)
+
+- Under the cusp identification \(\partial X_Y\cong \mathbb{R}/\mathbb{Z}\), the boundary translation symmetry implies the scattering operator preserves Fourier modes in \(x\).
+- In particular, the constant Fourier mode subspace \(\mathrm{ran}(P_0)\) is invariant, one-dimensional in the one-cusp modular case, and the restriction of the scattering operator to it is multiplication by \(\phi(s)\).
+
+This is standard in cusp scattering theory and is recorded explicitly in references that compute the Eisenstein constant term (e.g. Iwaniec; Hejhal/Borthwick-style cusp scattering texts).
+
+### H8 (Canonicity of the extracted scalar channel on safe rectangles)
+
+- On each safe rectangle \(R\), assume a uniform spectral gap isolating the target channel eigenvalue.
+- Define the eigenprojection by the Riesz projector (fixed contour) and use holomorphic dependence to prevent eigenchannel swapping.
+
+This is the analytic mechanism that makes “the cusp channel” a canonical object once the constant-mode overlap is fixed at one basepoint.
+
+---
+
 ## References (standard sources to cite)
 
 - Classical constant-term/scattering normalization (primary viewpoint for this note):
