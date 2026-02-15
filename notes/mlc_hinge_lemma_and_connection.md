@@ -169,6 +169,32 @@ Passing these tests supports Gap A strongly and reduces the chance that “modul
 
 ---
 
+## Part V. Curvature: where the analogy is real, and where it is not
+
+The term “curvature” can be a useful intuition bridge between the two worlds, but only if one keeps the axes separate.
+
+### V.1 Curvature-like phenomena in the RH/scattering notes
+
+These are real and operational in the pipeline, but they are **not** a refinement contraction constant:
+
+1) **Spectral/phase bending in $s$** (analytic continuation geometry): log-derivatives and phase derivatives of the extracted channel detect proximity to poles/zeros and changes in divisor geometry.
+2) **Cayley/Möbius representation geometry:** the Cayley transform maps self-adjoint data to a unitary object on $\Re(s)=1/2$; on that symmetry locus it is neutral/isometric ($\kappa=1$).
+3) **Admissibility margin $\delta$ (conditioning control):** invertibility margins bound how ill-conditioned the Cayley denominator can become, giving Lipschitz stability away from bottlenecks.
+
+### V.2 Curvature in the MLC/renormalization picture
+
+When contraction arguments are available, the curvature/hyperbolicity is dynamical:
+
+1) **Hyperbolic direction for renormalization** (Teichmüller geometry): on an admissible class, renormalization can be contracting ($\kappa<1$) in a Teichmüller/modulus-controlled metric.
+2) **A priori bounds as non-degeneration control:** modulus lower bounds act like bounded-geometry/injectivity-radius constraints that enable hyperbolic estimates.
+
+### V.3 Deep difference, and the shared architecture
+
+- **Deep difference:** RH pipeline stability is “neutral backbone + admissibility + canonical tracking + analytic rigidity closure”; the idealized MLC story is “admissibility + hyperbolic contraction $\Rightarrow$ shrinking”.
+- **Shared architecture:** both carve out an admissible class, prevent ghost behavior, and then use an appropriate closure mechanism (contraction or rigidity/uniqueness) to force a canonical limit object.
+
+---
+
 ## Pointers inside this repo
 
 - RH scaffold overview: [notes/proof_roadmap.md](proof_roadmap.md)

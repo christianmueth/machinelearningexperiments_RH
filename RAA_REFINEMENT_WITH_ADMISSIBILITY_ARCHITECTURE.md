@@ -64,6 +64,84 @@ So the honest RAA claim this repo supports is not “we have $\kappa<1$,” but:
 - canonical mode tracking (anti-swapping),
 - and a rigidity/closure principle that forces uniqueness once invariants hold.
 
+### Curvature in RH/scattering vs curvature in MLC/renormalization
+
+The word “curvature” shows up in both stories, but it refers to different geometry.
+
+**RH/scattering (this repo) — curvature-like phenomena are analytic/conditioning diagnostics.** Typical examples:
+
+- **Spectral/phase bending in $s$:** quantities like $\frac{d}{ds}\log\lambda(s)$ or $\frac{d}{ds}\arg\lambda(s)$ detect proximity to poles/zeros and changes in divisor geometry.
+- **Cayley/Möbius geometry:** the linear fractional transform mapping self-adjoint data to a unitary scattering object is nonlinear geometry of representation; on $\Re(s)=1/2$ it is isometric/unitary (neutral, $\kappa=1$).
+- **Admissibility margin $\delta$:** invertibility margins bound conditioning away from Cayley bottlenecks (Lipschitz control), but do not by themselves imply metric contraction under refinement depth.
+
+**MLC/renormalization — curvature is dynamical/hyperbolic when it exists.** In the idealized contraction picture:
+
+- Teichmüller/hyperbolic geometry of renormalization yields $d_T(Rf,Rg)\le \kappa\,d_T(f,g)$ with $\kappa<1$ on an admissible class.
+- A priori bounds (modulus lower bounds) prevent degeneration and enable hyperbolicity/contraction arguments.
+
+**Bottom line:** RH uses a neutral backbone + admissibility + rigidity closure; MLC (when available) uses admissibility + contraction (or another shrinking/uniqueness closure) to force piece shrinking.
+
+---
+
+## 1.5) Optional: where a genuine $\kappa<1$ could live for $N\mapsto N'$ refinement
+
+Unitarity ($\kappa=1$) is about the scattering object on the symmetry locus at a fixed discretization level. A strict contraction $\kappa<1$ would have to concern a different axis: the refinement map taking a coarse discretization to a finer one.
+
+Below are plausible places where a “refinement contraction” could emerge **without** contradicting the unitary backbone.
+
+1) **Contraction after quotienting gauge/basis symmetries**
+
+Raw operator norms can fail to contract if refinements differ by harmless unitary conjugacy (basis/gauge). A gauge-quotiented distance is
+\[
+d_{\mathrm{gauge}}(\Lambda_N,\Lambda_{N'}) := \inf_{U\in\mathcal{U}}\;\sup_{s\in R}\;\|\Lambda_N(s)-U^*\Lambda_{N'}(s)U\|.
+\]
+More surgically (and closer to what the proof actually uses), one can measure only the **channel projector** distance
+\[
+d_P(N,N') := \sup_{s\in R}\;\|P_N(s)-P_{N'}(s)\|,
+\]
+where $P_N(s)$ is the Riesz projector onto the isolated channel.
+
+2) **Resolution-aware (RG-style) metrics via coarse-graining**
+
+Comparing $N$ to $2N$ directly can hide contraction because the ambient space grows. If $\Pi_N$ is a coarse-graining/restriction map from the fine boundary space to the coarse one, define
+\[
+d_{\mathrm{RG}}(N,2N):=\sup_{s\in R}\;\|\Lambda_N(s)-\Pi_N\,\Lambda_{2N}(s)\,\Pi_N^*\|.
+\]
+If refinement mainly adds high-frequency detail, this kind of metric can contract.
+
+3) **Metrics on spectral measures rather than operators**
+
+Even when operators do not converge in norm, the spectral data used by the pipeline may converge rapidly in a weak topology. One can compare smoothed phase/derivative statistics (e.g. via bounded-Lipschitz or Wasserstein distances on induced measures).
+
+4) **Projective/Hilbert metrics on positive cones (if a positive transfer object exists)**
+
+Strict contractions are most naturally proved for strongly positive maps acting on cones. The scattering operator is unitary (not positive), but a derived positive object (kernel/density/transfer operator) might admit a projective metric where refinement is contractive.
+
+5) **Rigidity closure as a replacement for contraction (what this repo already uses)**
+
+Even if no natural $\kappa<1$ exists for refinement depth in any reasonable metric, the RH pipeline has a different closure mechanism:
+
+- admissibility (margins/gaps/divisor cleanliness),
+- canonical channel tracking (projectors under a gap),
+- analytic rigidity (quotient forced constant).
+
+In many settings this is stronger than contraction, because it forces uniqueness without requiring geometric shrinkage.
+
+### Concrete “next step” proxy tests (no proof claims)
+
+If you want to look for an empirical contraction signal across refinement, two low-friction proxies are:
+
+- **Projector contraction proxy:**
+\[
+\Delta_P(N):=\sup_{s\in\partial R}\;\|P_{2N}(s)-P_N(s)\|.
+\]
+- **Coarse-grained DN proxy:**
+\[
+\Delta_\Lambda(N):=\sup_{s\in\partial R}\;\|\Lambda_N(s)-\Pi_N\,\Lambda_{2N}(s)\,\Pi_N^*\|.
+\]
+
+If either exhibits a pattern like $\Delta(2N)\approx \kappa\,\Delta(N)$ with $\kappa<1$ on safe rectangles, that would define a meaningful “refinement contraction” notion for the pipeline (again: this would be a stability diagnostic, not a proof ingredient).
+
 ---
 
 ## 2) What this repo already implements (that many AI stacks don’t)
