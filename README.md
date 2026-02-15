@@ -17,6 +17,10 @@ This repository contains the RH/Experiment-E proof package notes, the frozen run
 - Rigidity hinge for \(Q(s)=\lambda(s)/\phi_{mod}(s)\): [notes/proposition_identification_hinge.md](notes/proposition_identification_hinge.md)
 - One-page audit table (hypotheses \(\leftrightarrow\) artifacts): [notes/hypotheses_to_artifacts.md](notes/hypotheses_to_artifacts.md)
 
+## Structural analogue (MLC blueprint)
+
+- Mandelbrot Local Connectivity (MLC) in the same “one-hinge lemma + closure” style, and its connection to the DN/Cayley/scattering pipeline: [notes/mlc_hinge_lemma_and_connection.md](notes/mlc_hinge_lemma_and_connection.md)
+
 ## Evidence packets (human-readable summaries)
 
 - Results packets: [RESULTS_PACKET_2026-01-29.md](RESULTS_PACKET_2026-01-29.md), [RESULTS_PACKET_2026-01-30.md](RESULTS_PACKET_2026-01-30.md), [RESULTS_PACKET_2026-01-31.md](RESULTS_PACKET_2026-01-31.md)
