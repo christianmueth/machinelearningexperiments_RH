@@ -22,6 +22,10 @@ This repository contains the RH/Experiment-E proof package notes, the frozen run
 
 - Mandelbrot Local Connectivity (MLC) in the same “one-hinge lemma + closure” style, and its connection to the DN/Cayley/scattering pipeline: [notes/mlc_hinge_lemma_and_connection.md](notes/mlc_hinge_lemma_and_connection.md)
 
+## AI/AGI abstraction (RAA)
+
+- Refinement-with-Admissibility Architecture (RAA): stable refinement systems + ghost diagnostics, grounded in the repo’s methodology firewall and admissibility engine: [RAA_REFINEMENT_WITH_ADMISSIBILITY_ARCHITECTURE.md](RAA_REFINEMENT_WITH_ADMISSIBILITY_ARCHITECTURE.md)
+
 ## Evidence packets (human-readable summaries)
 
 - Results packets: [RESULTS_PACKET_2026-01-29.md](RESULTS_PACKET_2026-01-29.md), [RESULTS_PACKET_2026-01-30.md](RESULTS_PACKET_2026-01-30.md), [RESULTS_PACKET_2026-01-31.md](RESULTS_PACKET_2026-01-31.md)

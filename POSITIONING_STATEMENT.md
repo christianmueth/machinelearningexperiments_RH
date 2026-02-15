@@ -79,3 +79,9 @@ The remaining proof-aligned gap is no longer “find any mechanism.” It is thr
 ## The safe non-oversell line
 
 This is **not a proof of RH**. It is evidence for a *mechanism candidate*: a self‑adjoint completion observable whose rigidity is measurably controlled by a geometry-derived Tp construction, surviving preregistration and heavy adversarial nulls. The remaining work is to formalize admissibility/gauge, upgrade closure residuals to identities, and connect the completed determinant to an RH‑equivalent analytic object.
+
+## General-purpose abstraction (reliable refinement systems)
+
+Independently of RH, the repo’s strongest potentially reusable idea is structural: it implements a **stable refinement system** with (i) an explicit firewall between *assumptions* and *witnessed diagnostics*, (ii) **admissibility** as a first-class object, and (iii) measurable **ghost/failure detectors** (gap collapse, winding instability, bottlenecks).
+
+Mandelbrot local connectivity (MLC) provides the cleanest mathematical template for why this matters (admissibility + contraction/collapse makes shrinking formal). A proposal-ready outline that maps this structure to recursive AI reasoning is in: [RAA_REFINEMENT_WITH_ADMISSIBILITY_ARCHITECTURE.md](RAA_REFINEMENT_WITH_ADMISSIBILITY_ARCHITECTURE.md)
