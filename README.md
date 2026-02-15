@@ -7,6 +7,7 @@ This repository contains the RH/Experiment-E proof package notes, the frozen run
 - Proof navigation map: [notes/proof_roadmap.md](notes/proof_roadmap.md)
 - Numerics-as-witnesses methodology firewall: [notes/methodology_numerics_as_witnesses.md](notes/methodology_numerics_as_witnesses.md)
 - Frozen run protocol / contract: [RUN_CONTRACT.md](RUN_CONTRACT.md)
+- Remaining obligations (proof delta: what’s still analytic vs witnessed): [REMAINING_OBLIGATIONS.md](REMAINING_OBLIGATIONS.md)
 
 ## Proof chain (notes)
 
