@@ -14,6 +14,8 @@ Numerical experiments are used solely to witness the hypotheses of the analytic 
 
 See also: `notes/methodology_numerics_as_witnesses.md` for a short reader-facing preface.
 
+Structural analogue: Mandelbrot Local Connectivity (MLC) in the same “one-hinge lemma + closure” style, mapped onto this pipeline: `notes/mlc_hinge_lemma_and_connection.md`.
+
 ---
 
 ## What is being identified
