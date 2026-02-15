@@ -27,9 +27,16 @@ A shared template:
 and an engine that enforces (at least)
 
 - **non-expansiveness** globally (no blow-ups), and
-- **collapse-to-canonical** on $A$ (ideally a contraction $\kappa<1$, or a weaker mechanism that still forces uniqueness/stability).
+- **admissibility-gated stability** on $A$ (well-conditioned/Lipschitz dependence plus a *canonicalization mechanism* that prevents mode swapping and eliminates ghost branches).
 
-**Why MLC matters:** it’s the cleanest theorem template where “admissibility + contraction” makes the final shrinking conclusion formal.
+In many serious systems you do **not** need (and should not overclaim) a literal contraction constant $\kappa<1$ in refinement depth. A cleaner and often more defensible closure pattern is:
+
+- **Non-expansive backbone** (bounded dynamics; often isometric/unitary on a symmetry locus), plus
+- **Admissibility-gated Lipschitz control** (explicit conditioning margins), plus
+- **Canonical channel tracking** (gap/projector-style anti-swapping), plus
+- **Rigidity/closure** (once invariants hold on admissible regions, a uniqueness principle forces a canonical outcome).
+
+**Why MLC matters:** it’s the cleanest theorem template where admissibility engineering turns “refinement” into a controlled dynamical system, and where the last step becomes formal once the right closure mechanism (contraction or rigidity/uniqueness) is in place.
 
 Pointers:
 - MLC hinge skeleton and its RH mapping: [notes/mlc_hinge_lemma_and_connection.md](notes/mlc_hinge_lemma_and_connection.md)
@@ -133,7 +140,7 @@ Borrowed directly from the RH harness pattern:
 
 Mirror the repo’s falsification-first discipline:
 
-1) **Toy deterministic planning** with known convergent refinement: verify contraction/non-expansion in a chosen metric.
+1) **Toy deterministic planning** with known convergent refinement: verify non-expansion/Lipschitz control and a canonicalization/closure mechanism in a chosen metric.
 2) **Synthetic multi-branch reasoning with planted contradiction:** verify admissibility eliminates the planted ghost branch.
 3) **Tool-augmented reasoning loop:** verify refinement stabilizes rather than oscillates.
 
@@ -145,7 +152,7 @@ To claim RAA is more than a compelling analogy, one must provide:
 
 - a meaningful semantic metric $d$ on internal belief/plan states,
 - a proof (or tight empirical proxy with explicit assumptions) that refinement is non-expansive globally,
-- and that admissibility yields strict contraction or an equivalent “collapse-to-canonical” mechanism on $A$.
+- and that admissibility yields **well-conditioned refinement** (Lipschitz control with explicit margins) plus a **canonicalization/closure mechanism** that prevents persistent branching (ghost modes).
 
 MLC is the canonical warning: without the right metric/geometry control, one can “shrink the wrong thing” and still have ghosts.
 

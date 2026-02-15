@@ -4,7 +4,7 @@
 
 This note records (i) the **clean logical skeleton** behind the standard “MLC via puzzle-piece shrinking” program, and (ii) how that skeleton matches the RH/Experiment-E pipeline structure in this repository.
 
-This note is **not** a claim that MLC is proven globally. The whole point of the reduction is that the global conjecture remains open because the required **uniform admissibility / contraction engine** is not known in full generality.
+This note is **not** a claim that MLC is proven globally. The whole point of the reduction is that the global conjecture remains open because the required **uniform admissibility engine** (and the corresponding shrinking/closure mechanism on that admissible class) is not known in full generality.
 
 ---
 
@@ -38,13 +38,13 @@ and the local connectivity conclusion at $c$ follows from standard topological f
 
 ### One-hinge lemma (the only substantive content)
 
-All the dynamical difficulty is pushed into: **admissibility $\Rightarrow$ strict contraction of refinement**.
+All the dynamical difficulty is pushed into: **admissibility $\Rightarrow$ controlled refinement with a ghost-eliminating closure mechanism**.
 
 - Let $R$ denote the parapuzzle refinement operator (“go one depth deeper”).
 - Let $A$ denote an admissible class of puzzle data (bounded geometry / a priori bounds).
 - Let $d$ be a geometry-controlling metric on the appropriate moduli space (typically Teichmüller distance, or a modulus-based distance that controls distortion/shape).
 
-**Hinge lemma (template).** If there exists $\kappa<1$ such that for all $x,y\in A$,
+**Hinge lemma (template: contraction form).** If there exists $\kappa<1$ such that for all $x,y\in A$,
 \[
  d(Rx, Ry) \le \kappa\, d(x,y),
 \]
@@ -53,13 +53,19 @@ then refinement is a strict contraction on $A$, and one deduces exponential shri
 \operatorname{diam}(P_n(c)) \le C\,\kappa^n \to 0.
 \]
 
+**Hinge lemma (template: rigidity/uniqueness closure form).** Even without a literal $\kappa<1$, one can still aim for an MLC-style conclusion if admissibility produces:
+
+- non-expansive (or uniformly well-conditioned) refinement on $A$,
+- a canonicalization mechanism that prevents mode swapping / fragmentation,
+- and a rigidity/uniqueness principle that forces a single limit object once invariants hold.
+
 Interpretation:
 - The “closure step” (nested pieces + diameters shrink $\Rightarrow$ MLC) is **formal**.
-- The “one-hinge lemma” is where all real work sits: proving that your refinement map is a contraction on a class where geometry is controlled.
+- The “one-hinge lemma” is where all real work sits: proving that your refinement map is controlled on an admissible class, and that a suitable contraction or rigidity/closure mechanism forces shrinking.
 
 ### Why global MLC remains hard (in this skeleton)
 
-To apply the hinge lemma uniformly over all $c\in\mathcal{M}$ you need a uniform admissible class $A$ (a priori bounds, complex bounds, control of renormalizations, etc.) that is stable under refinement and strong enough to force $\kappa<1$.
+To apply an MLC-style hinge uniformly over all $c\in\mathcal{M}$ you need a uniform admissible class $A$ (a priori bounds, complex bounds, control of renormalizations, etc.) that is stable under refinement and strong enough to force shrinking via either (i) a contraction argument or (ii) an alternative rigidity/uniqueness closure mechanism.
 
 This is precisely the missing global engine.
 
@@ -101,13 +107,20 @@ That closure step is the RH analogue of “nested connected neighborhoods + diam
 
 In RH you do **not** literally need a strict contraction of a metric, because on the critical line unitarity/non-expansiveness is the natural symmetry.
 
+The closest honest structural match is:
+
+- **Non-expansive backbone** (unitarity on $\Re(s)=1/2$ away from poles), plus
+- **Admissibility-gated Lipschitz control** (invertibility margins keeping Cayley stable), plus
+- **Canonical channel tracking** (gap + Riesz projector preventing swapping), plus
+- **Rigidity/closure** (the quotient-hinge proposition forcing canonicity once invariants and divisor-control hold).
+
 What you need instead is the bundle of strict controls that prevent “ghost” poles/zeros and prevent channel ambiguity:
 
 - **Invertibility margins** (keep Cayley analytic; no spurious poles).
 - **Riesz projector continuity / spectral gap** (channel is canonical; no swapping).
 - **Normal-family type bounds** (subsequence limits exist and are unique on rectangles).
 
-This is exactly the “MLC-style admissibility engine” in operator language.
+This is exactly the “MLC-style admissibility first, then closure” doctrine in operator language.
 
 ---
 
