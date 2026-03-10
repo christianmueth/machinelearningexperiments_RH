@@ -8,8 +8,6 @@ determinant-level invariants	- very uncommon
 cross-resolution operator tests	- rare
 operator-based diagnostics	- emerging research area
 
-So it’s not unprecedented, but it’s definitely not standard ML practice.
-
 ## Start here
 
 - Proof navigation map: [notes/proof_roadmap.md](notes/proof_roadmap.md)
