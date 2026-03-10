@@ -3,9 +3,13 @@
 This repository contains the RH/Experiment-E proof package notes, the frozen run protocol, and the code/configs used to generate the numerical *witness* artifacts.
 
 Inductive bias research:
+
 spectral stability bias	- uncommon
+
 determinant-level invariants	- very uncommon
+
 cross-resolution operator tests	- rare
+
 operator-based diagnostics	- emerging research area
 
 ## Start here
