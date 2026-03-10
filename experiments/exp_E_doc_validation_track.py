@@ -39,10 +39,34 @@ def _validate_run_contract(out_dir: str, config: dict) -> None:
             "E_Qlambda_convergence_fit.csv",
         ]
 
-        conv_do_winding = bool(config.get("convergence_do_winding", True))
+        if bool(config.get("convergence_do_magphase_diag", True)):
+            required.append("E_Qlambda_convergence_magphase.csv")
+
+        # Keep the contract default aligned with the execution default.
+        conv_do_winding = bool(config.get("convergence_do_winding", False))
         if conv_do_winding:
             conv_wind_out = str(config.get("convergence_wind_out_csv", "E_Qlambda_convergence_winding.csv"))
             required.append(conv_wind_out)
+
+        # Optional: critical-line fingerprint sweep (Task 1 infrastructure).
+        if bool(config.get("do_critical_line_fingerprint", False)):
+            fp_points = str(config.get("critical_line_points_out_csv", "E_Qlambda_critical_line_fingerprint_points.csv"))
+            fp_summary = str(config.get("critical_line_summary_out_csv", "E_Qlambda_critical_line_fingerprint_summary.csv"))
+            required += [fp_points, fp_summary]
+            if bool(config.get("critical_line_eval_candidates", False)):
+                fp_cands = str(config.get("critical_line_candidates_out_csv", "E_Qlambda_critical_line_candidates_summary.csv"))
+                required.append(fp_cands)
+
+            # Optional: pi-ramp diagnostics + alpha-fit witnesses (referee-proof artifacts)
+            if bool(config.get("critical_line_do_pi_ramp_diagnostics", False)):
+                out_fit = str(config.get("critical_line_pi_ramp_fit_out_csv", "E_Qlambda_pi_ramp_fit.csv"))
+                out_res = str(config.get("critical_line_phase_residual_out_csv", "E_Qlambda_phase_residual_table.csv"))
+                required += [out_fit, out_res]
+                # Optional contracted secondary (relaxed-gamma) witnesses for empty/fragile intersections.
+                if bool(config.get("critical_line_pi_ramp_emit_secondary", False)):
+                    out_fit2 = str(config.get("critical_line_pi_ramp_fit_secondary_out_csv", "E_Qlambda_pi_ramp_fit_relaxed.csv"))
+                    out_res2 = str(config.get("critical_line_phase_residual_secondary_out_csv", "E_Qlambda_phase_residual_table_relaxed.csv"))
+                    required += [out_fit2, out_res2]
 
     if boundary_autopick:
         required += [
@@ -122,6 +146,507 @@ def _channel_swap(base_n: int) -> np.ndarray:
     return np.concatenate([top, bot], axis=0)
 
 
+def _parse_float_list_or_spec(v: object, *, default: str) -> list[float]:
+    """Parse either a list/tuple of numbers or a compact spec string.
+
+    Supported spec forms:
+    - comma list: "0,0.5,1"
+    - range: "start:stop:step" (inclusive-ish; uses np.arange)
+    - union: "spec1;spec2"
+    """
+
+    if v is None:
+        v = default
+
+    if isinstance(v, (list, tuple)):
+        out: list[float] = []
+        for x in v:
+            out.append(float(x))
+        return sorted(set(out))
+
+    s = str(v).strip()
+    if not s:
+        s = str(default)
+
+    out2: list[float] = []
+    for part in s.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" in part:
+            toks = [t.strip() for t in part.split(":") if t.strip()]
+            if len(toks) != 3:
+                raise ValueError(f"Bad float spec (expected start:stop:step): {part}")
+            a0 = float(toks[0])
+            a1 = float(toks[1])
+            da = float(toks[2])
+            if da == 0.0:
+                raise ValueError("step must be nonzero")
+            arr = np.arange(a0, a1 + 0.5 * da, da, dtype=float)
+            out2 += [float(x) for x in arr.tolist()]
+        else:
+            toks = [t.strip() for t in part.split(",") if t.strip()]
+            out2 += [float(t) for t in toks]
+    return sorted(set(out2))
+
+
+def _parse_windows(spec: object) -> list[tuple[float, float]]:
+    """Parse windows spec.
+
+    Accepts:
+    - list of strings like ["0:25","25:50"]
+    - string "0:25;25:50"
+    """
+    if spec is None:
+        return []
+    if isinstance(spec, (list, tuple)):
+        parts = [str(x) for x in spec]
+    else:
+        s = str(spec).strip()
+        if not s:
+            return []
+        parts = [p.strip() for p in s.split(";") if p.strip()]
+    out: list[tuple[float, float]] = []
+    for p in parts:
+        toks = [t.strip() for t in str(p).split(":") if t.strip()]
+        if len(toks) != 2:
+            raise ValueError(f"Bad window spec (expected tmin:tmax): {p}")
+        out.append((float(toks[0]), float(toks[1])))
+    return out
+
+
+def _compute_jump_by_N_from_point_rows(point_rows: list[dict]) -> dict[tuple[int, float], float]:
+    """Compute lam_raw jump magnitude per point (N,t) using sorted t per N."""
+    byN: dict[int, list[tuple[float, complex]]] = {}
+    for r in point_rows:
+        if str(r.get("status", "")) != "ok":
+            continue
+        try:
+            N0 = int(r.get("N"))
+            t0 = float(r.get("t"))
+            lam_raw = complex(float(r.get("lam_raw_re")), float(r.get("lam_raw_im")))
+        except Exception:
+            continue
+        byN.setdefault(N0, []).append((t0, lam_raw))
+
+    jump: dict[tuple[int, float], float] = {}
+    for N0, arr in byN.items():
+        arr2 = sorted(arr, key=lambda x: x[0])
+        for i, (t0, lam0) in enumerate(arr2):
+            if i == 0:
+                jump[(int(N0), float(t0))] = float("nan")
+            else:
+                jump[(int(N0), float(t0))] = float(abs(lam0 - arr2[i - 1][1]))
+    return jump
+
+
+def _write_pi_ramp_diagnostics_from_points_csv(
+    out_dir: str,
+    config: dict,
+    points_csv_name: str,
+    *,
+    gamma_override: float | None = None,
+    out_fit_override: str | None = None,
+    out_res_override: str | None = None,
+    relaxed_tag: str = "primary",
+) -> None:
+    """Emit contracted pi-ramp + residual diagnostic CSV artifacts for the run."""
+
+    od = Path(out_dir)
+    points_path = od / str(points_csv_name)
+    if not points_path.exists():
+        return
+
+    # Settings (kept intentionally explicit for auditability)
+    which = str(config.get("critical_line_pi_ramp_which", "healthy"))
+    gamma_primary = float(config.get("critical_line_pi_ramp_gamma", 0.05))
+    gamma = float(gamma_override) if gamma_override is not None else float(gamma_primary)
+    jump_thr = float(config.get("critical_line_pi_ramp_jump", 5.0))
+    mask_mode = str(config.get("critical_line_pi_ramp_mask", "intersection_gamma_ginf"))
+    loss_name = str(config.get("critical_line_pi_ramp_loss", "phase_top5mean"))
+    phase_mode = str(config.get("critical_line_pi_ramp_mode", "unit_phase_err"))
+    lambda_mag = float(config.get("critical_line_pi_ramp_lambda_mag", 0.25))
+    pi_scales = [int(x) for x in (config.get("critical_line_pi_scales") or [1, 2])]
+    windows = _parse_windows(config.get("critical_line_pi_ramp_windows"))
+    alpha_grid = _parse_float_list_or_spec(config.get("critical_line_alpha_grid"), default="0,0.5,1,1.5,2")
+
+    out_fit = str(out_fit_override) if out_fit_override is not None else str(config.get("critical_line_pi_ramp_fit_out_csv", "E_Qlambda_pi_ramp_fit.csv"))
+    out_res = str(out_res_override) if out_res_override is not None else str(config.get("critical_line_phase_residual_out_csv", "E_Qlambda_phase_residual_table.csv"))
+
+    df = pd.read_csv(points_path)
+    rows = df.to_dict(orient="records")
+    jumps = _compute_jump_by_N_from_point_rows(rows)
+
+    # Use the same primitives used to create the points; this avoids drift.
+    phi_target_mode = str(config.get("phi_target_mode", "modular"))
+    phi_select_mode = str(config.get("phi_select_mode", phi_target_mode))
+    completion_mode = str(config.get("completion_mode", "none"))
+    primes = tuple(int(x) for x in (config.get("primes") or []))
+
+    def _healthy_keyset(*, tmin: float | None = None, tmax: float | None = None) -> set[tuple[int, float]]:
+        ok: set[tuple[int, float]] = set()
+        for r in rows:
+            if str(r.get("status", "")) != "ok":
+                continue
+            try:
+                N0 = int(r.get("N"))
+                t0 = float(r.get("t"))
+            except Exception:
+                continue
+            if (tmin is not None and t0 < float(tmin)) or (tmax is not None and t0 > float(tmax)):
+                continue
+            if which == "healthy":
+                try:
+                    gap = float(r.get("gap_phi"))
+                except Exception:
+                    continue
+                if (not np.isfinite(gap)) or gap < float(gamma):
+                    continue
+                j = float(jumps.get((int(N0), float(t0)), float("nan")))
+                if (not np.isfinite(j)) or j > float(jump_thr):
+                    continue
+            ok.add((int(N0), float(t0)))
+        return ok
+
+    # Base keyset for full window
+    full_ok = _healthy_keyset()
+
+    def q_for_factor(lam_raw: complex, s: complex, fac: complex) -> complex | None:
+        try:
+            phi_norm = phi_target(s, primes=primes, completion_mode=completion_mode, mode=phi_target_mode)
+            if (not is_finite_complex(phi_norm)) or abs(phi_norm) <= 1e-30:
+                return None
+            lam = complex(lam_raw * fac)
+            q = complex(lam / phi_norm)
+            return q if is_finite_complex(q) else None
+        except Exception:
+            return None
+
+    def q_gamma(lam_raw: complex, s: complex) -> complex | None:
+        return q_for_factor(lam_raw, s, lambda_norm_factor(s, "gamma_only"))
+
+    def q_ginf(lam_raw: complex, s: complex) -> complex | None:
+        return q_for_factor(lam_raw, s, lambda_norm_factor(s, "ginf_multiply"))
+
+    def _iter_points(keyset: set[tuple[int, float]], *, tmin: float | None = None, tmax: float | None = None):
+        for r in rows:
+            if str(r.get("status", "")) != "ok":
+                continue
+            try:
+                N0 = int(r.get("N"))
+                t0 = float(r.get("t"))
+                sigma0 = float(r.get("sigma"))
+                lam_raw = complex(float(r.get("lam_raw_re")), float(r.get("lam_raw_im")))
+            except Exception:
+                continue
+            if (tmin is not None and t0 < float(tmin)) or (tmax is not None and t0 > float(tmax)):
+                continue
+            if (int(N0), float(t0)) not in keyset:
+                continue
+            yield (int(N0), float(t0), complex(float(sigma0), float(t0)), lam_raw)
+
+    def _unwrap_phase_by_N(points_phase: list[tuple[int, float, float]]) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+        byN: dict[int, list[tuple[float, float]]] = {}
+        for N0, t0, ph in points_phase:
+            byN.setdefault(int(N0), []).append((float(t0), float(ph)))
+        out: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        for N0, arr in byN.items():
+            arr2 = sorted(arr, key=lambda x: x[0])
+            ts = np.asarray([a[0] for a in arr2], dtype=float)
+            phs = np.asarray([a[1] for a in arr2], dtype=float)
+            out[int(N0)] = (ts, np.unwrap(phs))
+        return out
+
+    def _robust_linefit_by_N(points_phase: list[tuple[int, float, float]]) -> tuple[float, float, float, dict[int, dict[str, float]]]:
+        unwrapped = _unwrap_phase_by_N(points_phase)
+        slopes: list[float] = []
+        rms_list: list[float] = []
+        perN: dict[int, dict[str, float]] = {}
+        for N0, (ts, phs) in unwrapped.items():
+            mask = np.isfinite(ts) & np.isfinite(phs)
+            ts2 = ts[mask]
+            phs2 = phs[mask]
+            if ts2.size < 8:
+                continue
+            b, a = np.polyfit(ts2, phs2, 1)
+            pred = a + b * ts2
+            rms = float(np.sqrt(np.mean((phs2 - pred) ** 2)))
+            slopes.append(float(b))
+            rms_list.append(float(rms))
+            perN[int(N0)] = {"n": float(ts2.size), "b": float(b), "a": float(a), "rms": float(rms)}
+        if not slopes:
+            return (float("nan"), float("nan"), float("nan"), perN)
+        b_med = float(np.median(slopes))
+        b_p95abs = float(np.percentile(np.abs(np.asarray(slopes, dtype=float)), 95.0))
+        rms_med = float(np.median(rms_list)) if rms_list else float("nan")
+        return (b_med, b_p95abs, rms_med, perN)
+
+    def _forced_line_residuals_by_N(points_phase: list[tuple[int, float, float]], *, forced_b: float) -> tuple[float, float, float]:
+        """Compute residual slope and RMS after removing a forced slope b, allowing only an intercept per N.
+
+        Returns (b_resid_median, b_resid_p95abs, rms_median).
+        """
+
+        unwrapped = _unwrap_phase_by_N(points_phase)
+        b_resid: list[float] = []
+        rms_list: list[float] = []
+        for _, (ts, phs) in unwrapped.items():
+            mask = np.isfinite(ts) & np.isfinite(phs)
+            ts2 = ts[mask]
+            phs2 = phs[mask]
+            if ts2.size < 8:
+                continue
+            a = float(np.mean(phs2 - float(forced_b) * ts2))
+            resid = phs2 - (a + float(forced_b) * ts2)
+            rms = float(np.sqrt(np.mean(resid**2)))
+            br, _ar = np.polyfit(ts2, resid, 1)
+            b_resid.append(float(br))
+            rms_list.append(float(rms))
+
+        if not b_resid:
+            return (float("nan"), float("nan"), float("nan"))
+        b_med = float(np.median(b_resid))
+        b_p95abs = float(np.percentile(np.abs(np.asarray(b_resid, dtype=float)), 95.0))
+        rms_med = float(np.median(rms_list)) if rms_list else float("nan")
+        return (b_med, b_p95abs, rms_med)
+
+    def _phase_loss(q: complex) -> float:
+        absQ = float(abs(q))
+        if not np.isfinite(absQ) or absQ <= 0 or (not is_finite_complex(q)):
+            return float("nan")
+        if phase_mode == "abs_argQ":
+            return float(abs(np.angle(q)))
+        unit = q / absQ
+        return float(abs(unit - 1.0))
+
+    def _stats(vals: list[float]) -> dict[str, float]:
+        a = np.asarray(vals, dtype=float)
+        a = a[np.isfinite(a)]
+        if a.size == 0:
+            return {"n": 0.0, "median": float("nan"), "p95": float("nan"), "top5mean": float("nan"), "max": float("nan")}
+        k = max(1, int(np.ceil(0.05 * a.size)))
+        top = np.sort(a)[-k:]
+        return {
+            "n": float(a.size),
+            "median": float(np.median(a)),
+            "p95": float(np.percentile(a, 95.0)),
+            "top5mean": float(np.mean(top)),
+            "max": float(np.max(a)),
+        }
+
+    def _loss_key(phase_s: dict[str, float], mag_s: dict[str, float]) -> float:
+        if loss_name == "phase_p95":
+            return float(phase_s["p95"])
+        if loss_name == "phase_top5mean":
+            return float(phase_s["top5mean"])
+        if loss_name == "score_p95":
+            return float(phase_s["p95"]) + float(lambda_mag) * float(mag_s["p95"])
+        if loss_name == "score_top5mean":
+            return float(phase_s["top5mean"]) + float(lambda_mag) * float(mag_s["top5mean"])
+        return float("inf")
+
+    # CSV rows
+    fit_rows: list[dict] = []
+    res_rows: list[dict] = []
+
+    # Windows always include full
+    win_list: list[tuple[str, float | None, float | None]] = [("full", None, None)]
+    for (a, b) in windows:
+        win_list.append((f"{a}:{b}", float(a), float(b)))
+
+    # Step A per-window ramp fit on R(t)=Q_ginf/Q_gamma
+    for wname, tmin, tmax in win_list:
+        keyset = _healthy_keyset(tmin=tmin, tmax=tmax)
+        if mask_mode == "intersection_gamma_ginf":
+            keyset2: set[tuple[int, float]] = set()
+            for N0, t0, s, lam_raw in _iter_points(keyset, tmin=tmin, tmax=tmax):
+                qg = q_gamma(lam_raw, s)
+                qf = q_ginf(lam_raw, s)
+                if qg is None or qf is None:
+                    continue
+                if abs(qg) <= 1e-300 or abs(qf) <= 1e-300:
+                    continue
+                keyset2.add((int(N0), float(t0)))
+            keyset = keyset2
+
+        slope_pts: list[tuple[int, float, float]] = []
+        mag_dev: list[float] = []
+        for N0, t0, s, lam_raw in _iter_points(keyset, tmin=tmin, tmax=tmax):
+            qg = q_gamma(lam_raw, s)
+            qf = q_ginf(lam_raw, s)
+            if qg is None or qf is None or abs(qg) <= 1e-300:
+                continue
+            R = qf / qg
+            if not is_finite_complex(R) or abs(R) <= 1e-300:
+                continue
+            slope_pts.append((int(N0), float(t0), float(np.angle(R))))
+            mag_dev.append(float(abs(abs(R) - 1.0)))
+
+        b_med, b_p95abs, rms_med, perN = _robust_linefit_by_N(slope_pts)
+        forced_b = -float(np.log(np.pi))
+        b_resid_med, b_resid_p95abs, forced_rms_med = _forced_line_residuals_by_N(slope_pts, forced_b=forced_b)
+        mstats = _stats(mag_dev)
+        fit_rows.append(
+            {
+                "source": "pi_ramp_fit",
+                "relaxed_tag": str(relaxed_tag),
+                "relaxed_gamma_used": bool(gamma_override is not None),
+                "gamma_primary": float(gamma_primary),
+                "gamma_used": float(gamma),
+                "step": "A",
+                "ratio": "Q_ginf_over_Q_gamma",
+                "mask": str(mask_mode),
+                "which": str(which),
+                "gamma": float(gamma),
+                "jump": float(jump_thr),
+                "window": str(wname),
+                "t_min": float(tmin) if tmin is not None else float("nan"),
+                "t_max": float(tmax) if tmax is not None else float("nan"),
+                "b_med": float(b_med),
+                "b_p95abs": float(b_p95abs),
+                "rms_med": float(rms_med),
+                "forced_b": float(forced_b),
+                "forced_b_resid_med": float(b_resid_med),
+                "forced_b_resid_p95abs": float(b_resid_p95abs),
+                "forced_rms_med": float(forced_rms_med),
+                "magdev_med": float(mstats["median"]),
+                "magdev_p95": float(mstats["p95"]),
+                "magdev_max": float(mstats["max"]),
+                "n_points": int(mstats["n"]),
+                "nN": int(len(perN)),
+            }
+        )
+
+    # Step B: alpha fit per pi_scale and per window
+    lnpi = float(np.log(np.pi))
+    for pi_scale in pi_scales:
+        for wname, tmin, tmax in win_list:
+            keyset = _healthy_keyset(tmin=tmin, tmax=tmax)
+            if mask_mode == "intersection_gamma_ginf":
+                keyset2: set[tuple[int, float]] = set()
+                for N0, t0, s, lam_raw in _iter_points(keyset, tmin=tmin, tmax=tmax):
+                    qg = q_gamma(lam_raw, s)
+                    qf = q_ginf(lam_raw, s)
+                    if qg is None or qf is None:
+                        continue
+                    if abs(qg) <= 1e-300 or abs(qf) <= 1e-300:
+                        continue
+                    keyset2.add((int(N0), float(t0)))
+                keyset = keyset2
+
+            best_alpha: float | None = None
+            best_loss: float = float("inf")
+            best_phase: dict[str, float] | None = None
+            best_mag: dict[str, float] | None = None
+            best_n: int = 0
+
+            # evaluate grid
+            for alpha in alpha_grid:
+                phase_errs: list[float] = []
+                mag_errs: list[float] = []
+                for _, _, s, lam_raw in _iter_points(keyset, tmin=tmin, tmax=tmax):
+                    fac_gamma = lambda_norm_factor(s, "gamma_only")
+                    pi_fac = complex(np.exp(float(alpha) * (0.5 - (float(pi_scale) * s)) * lnpi))
+                    q = q_for_factor(lam_raw, s, fac_gamma * pi_fac)
+                    if q is None:
+                        continue
+                    absQ = float(abs(q))
+                    if not np.isfinite(absQ) or absQ <= 0:
+                        continue
+                    phase_err = _phase_loss(q)
+                    mag_err = float(abs(absQ - 1.0))
+                    if np.isfinite(phase_err):
+                        phase_errs.append(float(phase_err))
+                    if np.isfinite(mag_err):
+                        mag_errs.append(float(mag_err))
+                ps = _stats(phase_errs)
+                ms = _stats(mag_errs)
+                cur_loss = _loss_key(ps, ms)
+                if np.isfinite(cur_loss) and cur_loss < best_loss:
+                    best_loss = float(cur_loss)
+                    best_alpha = float(alpha)
+                    best_phase = ps
+                    best_mag = ms
+                    best_n = int(ps.get("n", 0.0))
+
+            fit_rows.append(
+                {
+                    "source": "pi_ramp_fit",
+                    "relaxed_tag": str(relaxed_tag),
+                    "relaxed_gamma_used": bool(gamma_override is not None),
+                    "gamma_primary": float(gamma_primary),
+                    "gamma_used": float(gamma),
+                    "step": "B",
+                    "model": "Q_gamma * exp(alpha*(1/2 - pi_scale*s)*log(pi))",
+                    "pi_scale": int(pi_scale),
+                    "mask": str(mask_mode),
+                    "which": str(which),
+                    "gamma": float(gamma),
+                    "jump": float(jump_thr),
+                    "window": str(wname),
+                    "t_min": float(tmin) if tmin is not None else float("nan"),
+                    "t_max": float(tmax) if tmax is not None else float("nan"),
+                    "loss": str(loss_name),
+                    "best_alpha": float(best_alpha) if best_alpha is not None else float("nan"),
+                    "best_loss": float(best_loss) if np.isfinite(best_loss) else float("nan"),
+                    "phase_p95": float(best_phase["p95"]) if best_phase is not None else float("nan"),
+                    "phase_top5mean": float(best_phase["top5mean"]) if best_phase is not None else float("nan"),
+                    "mag_p95": float(best_mag["p95"]) if best_mag is not None else float("nan"),
+                    "mag_top5mean": float(best_mag["top5mean"]) if best_mag is not None else float("nan"),
+                    "n_points": int(best_n),
+                }
+            )
+
+            # Step C: residual slope/curvature table for alpha in {0,1,2,best}
+            alphas_res = [0.0, 1.0, 2.0]
+            if best_alpha is not None and all(abs(best_alpha - a) > 1e-12 for a in alphas_res):
+                alphas_res.append(float(best_alpha))
+            for alpha in alphas_res:
+                phase_pts: list[tuple[int, float, float]] = []
+                for N0, t0, s, lam_raw in _iter_points(keyset, tmin=tmin, tmax=tmax):
+                    fac_gamma = lambda_norm_factor(s, "gamma_only")
+                    pi_fac = complex(np.exp(float(alpha) * (0.5 - (float(pi_scale) * s)) * lnpi))
+                    q = q_for_factor(lam_raw, s, fac_gamma * pi_fac)
+                    if q is None:
+                        continue
+                    absQ = float(abs(q))
+                    if not np.isfinite(absQ) or absQ <= 0:
+                        continue
+                    qu = q / absQ
+                    if not is_finite_complex(qu):
+                        continue
+                    phase_pts.append((int(N0), float(t0), float(np.angle(qu))))
+                b_med, b_p95abs, rms_med, perN = _robust_linefit_by_N(phase_pts)
+                n_used = int(sum(int(v.get("n", 0.0)) for v in perN.values()))
+                res_rows.append(
+                    {
+                        "source": "phase_residual",
+                        "relaxed_tag": str(relaxed_tag),
+                        "relaxed_gamma_used": bool(gamma_override is not None),
+                        "gamma_primary": float(gamma_primary),
+                        "gamma_used": float(gamma),
+                        "pi_scale": int(pi_scale),
+                        "mask": str(mask_mode),
+                        "which": str(which),
+                        "gamma": float(gamma),
+                        "jump": float(jump_thr),
+                        "window": str(wname),
+                        "t_min": float(tmin) if tmin is not None else float("nan"),
+                        "t_max": float(tmax) if tmax is not None else float("nan"),
+                        "alpha": float(alpha),
+                        "b_med": float(b_med),
+                        "b_p95abs": float(b_p95abs),
+                        "rms_med": float(rms_med),
+                        "n_used": int(n_used),
+                    }
+                )
+
+    if fit_rows:
+        pd.DataFrame(fit_rows).to_csv(od / out_fit, index=False)
+    if res_rows:
+        pd.DataFrame(res_rows).to_csv(od / out_res, index=False)
+
+
 def xi(s: complex) -> complex:
     ss = mp.mpc(float(np.real(s)), float(np.imag(s)))
     # mpmath 1.3.0 has no riemannxi/xi helper and mp.gamma raises at poles.
@@ -170,6 +695,68 @@ def g_infty_classical(s: complex) -> complex:
 
     ss = mp.mpc(float(np.real(s)), float(np.imag(s)))
     return complex((mp.pi ** (mp.mpf("0.5") - ss)) * (mp.gamma(ss - mp.mpf("0.5")) / mp.gamma(ss)))
+
+
+def _pi_pow_half_minus_s(s: complex) -> complex:
+    ss = mp.mpc(float(np.real(s)), float(np.imag(s)))
+    return complex(mp.pi ** (mp.mpf("0.5") - ss))
+
+
+def _gamma_ratio_s_minus_half_over_s(s: complex) -> complex:
+    ss = mp.mpc(float(np.real(s)), float(np.imag(s)))
+    return complex(mp.gamma(ss - mp.mpf("0.5")) / mp.gamma(ss))
+
+
+def _gamma_ratio_s_over_s_minus_half(s: complex) -> complex:
+    ss = mp.mpc(float(np.real(s)), float(np.imag(s)))
+    return complex(mp.gamma(ss) / mp.gamma(ss - mp.mpf("0.5")))
+
+
+def lambda_norm_factor(s: complex, mode: str, *, s_ref: complex | None = None) -> complex:
+        """Scalar normalization factor applied to the extracted channel eigenvalue.
+
+        This is an explicit *candidate* Tier-2 normalization map (operator-level dictionary item)
+        implemented at the level of the scalar observable:
+
+            lambda_tilde(s) = factor(s) * lambda(s).
+
+        Modes:
+            - 'none': factor = 1
+            - 'ginf_multiply': factor = g_infty(s)
+            - 'ginf_divide': factor = 1/g_infty(s)
+            - 'ginf_abs_multiply': factor = |g_infty(s)| (magnitude-only foil)
+            - 'ginf_const_multiply': factor = g_infty(s_ref) (s-independent foil)
+            - 'ginf_abs_const_multiply': factor = |g_infty(s_ref)| (s-independent magnitude foil)
+            - 'ginf_const_divide': factor = 1/g_infty(s_ref)
+        """
+
+        mm = str(mode).strip().lower()
+        if mm in {"none", "", "0"}:
+                return 1.0 + 0.0j
+        if mm == "ginf_multiply":
+                return complex(g_infty_classical(s))
+        if mm == "ginf_divide":
+                g = complex(g_infty_classical(s))
+                return (1.0 / g) if is_finite_complex(g) and abs(g) > 1e-300 else complex("nan")
+        if mm in {"ginf_gamma_only_multiply", "ginf_gamma_multiply", "gamma_only"}:
+            return complex(_gamma_ratio_s_minus_half_over_s(s))
+        if mm in {"ginf_pi_only_multiply", "ginf_pi_multiply", "pi_only"}:
+            return complex(_pi_pow_half_minus_s(s))
+        if mm in {"ginf_abs_multiply", "ginf_abs"}:
+            g = complex(g_infty_classical(s))
+            return (abs(g) + 0.0j) if is_finite_complex(g) else complex("nan")
+        if mm in {"ginf_const_multiply", "ginf_multiply_const"}:
+            sr = complex(s_ref if s_ref is not None else (2.0 + 0.0j))
+            return complex(g_infty_classical(sr))
+        if mm in {"ginf_abs_const_multiply", "ginf_const_abs_multiply"}:
+            sr = complex(s_ref if s_ref is not None else (2.0 + 0.0j))
+            g = complex(g_infty_classical(sr))
+            return (abs(g) + 0.0j) if is_finite_complex(g) else complex("nan")
+        if mm in {"ginf_const_divide", "ginf_divide_const"}:
+            sr = complex(s_ref if s_ref is not None else (2.0 + 0.0j))
+            g = complex(g_infty_classical(sr))
+            return (1.0 / g) if is_finite_complex(g) and abs(g) > 1e-300 else complex("nan")
+        raise ValueError(f"unknown lambda_norm_mode={mode!r}")
 
 
 def safe_div(a: complex, b: complex) -> complex:
@@ -406,6 +993,46 @@ def local_phi_modular(p: int, s: complex) -> complex:
     return complex((1.0 - p ** (-2.0 * s)) / (1.0 - p ** (-(2.0 * s - 1.0))))
 
 
+def phi_euler_partial(primes: tuple[int, ...], s: complex) -> complex:
+    """Truncated Euler product target: Π_{p in primes} (1 - p^{-2s})/(1 - p^{-(2s-1)})."""
+
+    prod = 1.0 + 0.0j
+    for p in tuple(primes):
+        pp = int(p)
+        if pp <= 1:
+            continue
+        prod *= local_phi_modular(pp, s)
+    return complex(prod)
+
+
+def phi_target(s: complex, *, primes: tuple[int, ...], completion_mode: str, mode: str) -> complex:
+    """Selectable target used to form Q_lambda(s) = lambda(s)/phi_target(s).
+
+    Modes:
+      - 'modular': xi(2s-1)/xi(2s)
+      - 'euler_only': zeta(2s-1)/zeta(2s)
+      - 'euler_partial': product over provided primes (Tier-1 default)
+      - 'euler_partial_completed': g_infty(s) * product over primes
+      - 'auto': uses 'euler_partial' when completion_mode=='none', else 'modular'
+    """
+
+    mm = str(mode).strip().lower()
+    cm = str(completion_mode).strip().lower()
+    if mm == "auto":
+        mm = "euler_partial" if cm == "none" else "modular"
+
+    if mm == "modular":
+        return phi_modular(s)
+    if mm == "euler_only":
+        return phi_euler_only(s)
+    if mm == "euler_partial":
+        return phi_euler_partial(primes, s)
+    if mm == "euler_partial_completed":
+        return complex(g_infty_classical(s) * phi_euler_partial(primes, s))
+
+    raise ValueError(f"unknown phi_target_mode={mode!r}")
+
+
 @dataclass(frozen=True)
 class ModelCfg:
     N: int
@@ -456,6 +1083,46 @@ def main() -> int:
     bulk_mode = str(config.get("bulk_mode", "one_channel")).strip()
     completion_mode = str(config.get("completion_mode", "dual_1_minus_s")).strip()
     dual_scale = float(config.get("dual_scale", 1.0))
+
+    phi_target_mode = str(config.get("phi_target_mode", "modular")).strip().lower()
+    if phi_target_mode not in {"modular", "euler_only", "euler_partial", "euler_partial_completed", "auto"}:
+        raise ValueError("phi_target_mode must be one of: modular, euler_only, euler_partial, euler_partial_completed, auto")
+
+    phi_select_mode = str(config.get("phi_select_mode", phi_target_mode)).strip().lower()
+    if phi_select_mode not in {"modular", "euler_only", "euler_partial", "euler_partial_completed", "auto"}:
+        raise ValueError("phi_select_mode must be one of: modular, euler_only, euler_partial, euler_partial_completed, auto")
+
+    lambda_norm_mode = str(config.get("lambda_norm_mode", "none")).strip().lower()
+    if lambda_norm_mode not in {
+        "none",
+        "ginf_multiply",
+        "ginf_divide",
+        "ginf_gamma_only_multiply",
+        "ginf_gamma_multiply",
+        "gamma_only",
+        "ginf_pi_only_multiply",
+        "ginf_pi_multiply",
+        "pi_only",
+        "ginf_abs_multiply",
+        "ginf_abs",
+        "ginf_const_multiply",
+        "ginf_multiply_const",
+        "ginf_abs_const_multiply",
+        "ginf_const_abs_multiply",
+        "ginf_const_divide",
+        "ginf_divide_const",
+    }:
+        raise ValueError(
+            "lambda_norm_mode must be one of: none, ginf_multiply, ginf_divide, gamma_only, pi_only, ginf_abs_multiply, ginf_const_multiply, ginf_abs_const_multiply, ginf_const_divide"
+        )
+
+    lambda_norm_sref_cfg = config.get("lambda_norm_sref", None)
+    lambda_norm_sref: complex | None = None
+    if lambda_norm_sref_cfg is not None:
+        if isinstance(lambda_norm_sref_cfg, (list, tuple)) and len(lambda_norm_sref_cfg) >= 2:
+            lambda_norm_sref = complex(float(lambda_norm_sref_cfg[0]), float(lambda_norm_sref_cfg[1]))
+        else:
+            raise ValueError("lambda_norm_sref must be [sigma, t] if provided")
 
     generator_norm = config.get("generator_norm", "fro")
     if generator_norm is not None:
@@ -541,6 +1208,26 @@ def main() -> int:
     convergence_n_sigma = int(config.get("convergence_n_sigma", config.get("value_agreement_n_sigma", dip_suggest_interior_n_sigma)))
     convergence_n_t = int(config.get("convergence_n_t", config.get("value_agreement_n_t", dip_suggest_interior_n_t)))
 
+    # Critical-line fingerprint sweep: dense sigma=1/2 scan to fingerprint subfactor normalizations.
+    do_critical_line_fingerprint = bool(config.get("do_critical_line_fingerprint", False))
+    critical_line_sigma = float(config.get("critical_line_sigma", 0.5))
+    critical_line_t_min = float(config.get("critical_line_t_min", rect[2]))
+    critical_line_t_max = float(config.get("critical_line_t_max", rect[3]))
+    critical_line_nt = int(config.get("critical_line_nt", 401))
+    critical_line_basis = str(config.get("critical_line_basis", "incoming")).strip().lower()
+    critical_line_block = str(config.get("critical_line_block", "plus")).strip().lower()
+    critical_line_points_out_csv = str(config.get("critical_line_points_out_csv", "E_Qlambda_critical_line_fingerprint_points.csv"))
+    critical_line_summary_out_csv = str(config.get("critical_line_summary_out_csv", "E_Qlambda_critical_line_fingerprint_summary.csv"))
+    critical_line_eval_candidates = bool(config.get("critical_line_eval_candidates", False))
+    critical_line_candidates_out_csv = str(config.get("critical_line_candidates_out_csv", "E_Qlambda_critical_line_candidates_summary.csv"))
+    critical_line_candidates_cfg = config.get(
+        "critical_line_candidates",
+        ["none", "gamma_only", "pi_only", "ginf_multiply", "ginf_abs_multiply"],
+    )
+    critical_line_candidates: list[str] = [str(x).strip().lower() for x in (critical_line_candidates_cfg if isinstance(critical_line_candidates_cfg, list) else [])]
+    if not critical_line_candidates:
+        critical_line_candidates = ["none", "gamma_only", "pi_only", "ginf_multiply", "ginf_abs_multiply"]
+
     boundary_autopick = bool(config.get("boundary_autopick", False))
     boundary_autopick_window = int(config.get("boundary_autopick_window", 2))
     boundary_autopick_objective = str(config.get("boundary_autopick_objective", "p95")).strip().lower()
@@ -602,9 +1289,18 @@ def main() -> int:
     write_json(os.path.join(out_dir, "doc_meta.json"), doc_meta)
 
     def _swap_block_matrix(S: np.ndarray, block: str, b0: int) -> np.ndarray:
-        """Return the Swap± reduced b0xb0 matrix from a 2b0x2b0 scattering matrix."""
+        """Return the Swap± reduced b0xb0 matrix from a 2b0x2b0 scattering matrix.
+
+        If S is already b0xb0 (one-channel mode), there is no Swap± structure; we
+        return S for either block so downstream diagnostics still run.
+        """
 
         S = np.asarray(S, dtype=np.complex128)
+        if S.shape == (b0, b0):
+            return S.astype(np.complex128)
+        if S.shape[0] < 2 * b0 or S.shape[1] < 2 * b0:
+            raise ValueError(f"expected (2*b0)x(2*b0) matrix, got {S.shape} for b0={b0}")
+
         S11 = S[:b0, :b0]
         S12 = S[:b0, b0 : 2 * b0]
         S21 = S[b0 : 2 * b0, :b0]
@@ -694,6 +1390,30 @@ def main() -> int:
 
     @lru_cache(maxsize=10000)
     def _model_mats(s: complex, cfgm: ModelCfg) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        # Fast path for convergence-only runs in 2-channel mode:
+        # avoid assembling the full 2N×2N bulk matrix and avoid dn_map_on_indices' large interior copy.
+        # This computes the exact same boundary DN map Λ_b via the (U,W)-structured Schur complement.
+        if bool(do_convergence_sweep_only) and str(bulk_mode).lower().strip() == "two_channel_symmetric":
+            from src.bulk import build_two_channel_UW  # local import
+            from src.dn import dn_map_two_channel_boundary  # local import
+
+            base_N = int(cfgm.N // 2)
+            bulk_params = BulkParams(N=int(base_N), weight_k=cfgm.weight_k)
+            U, W = build_two_channel_UW(
+                s=s,
+                primes=list(cfgm.primes),
+                comps=None,
+                params=bulk_params,
+                generator_norm=cfgm.generator_norm,
+                generator_norm_target=cfgm.generator_norm_target,
+                completion_mode=cfgm.completion_mode,
+                dual_scale=cfgm.dual_scale,
+            )
+            b0 = int(cfgm.b // 2)
+            Lam = dn_map_two_channel_boundary(U, W, b0=b0, jitter=cfgm.jitter)
+            S = cayley_from_lambda(Lam, eta=cfgm.eta, eps=cfgm.cayley_eps)
+            return np.empty((0, 0), dtype=np.complex128), Lam, S
+
         # Note: BulkParams.N refers to the base one-channel size. For 2-channel mode we pass N/2.
         base_N = int(cfgm.N // 2) if str(bulk_mode).lower().strip() == "two_channel_symmetric" else int(cfgm.N)
         bulk_params = BulkParams(N=int(base_N), weight_k=cfgm.weight_k)
@@ -719,6 +1439,27 @@ def main() -> int:
     @lru_cache(maxsize=10000)
     def _free_mats(s: complex, cfgm: ModelCfg) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Reference/free mats for primes=[] (used for matrix-level normalization)."""
+        if bool(do_convergence_sweep_only) and str(bulk_mode).lower().strip() == "two_channel_symmetric":
+            from src.bulk import build_two_channel_UW  # local import
+            from src.dn import dn_map_two_channel_boundary  # local import
+
+            base_N = int(cfgm.N // 2)
+            bulk_params = BulkParams(N=int(base_N), weight_k=cfgm.weight_k)
+            U, W = build_two_channel_UW(
+                s=s,
+                primes=[],
+                comps=None,
+                params=bulk_params,
+                generator_norm=cfgm.generator_norm,
+                generator_norm_target=cfgm.generator_norm_target,
+                completion_mode=cfgm.completion_mode,
+                dual_scale=cfgm.dual_scale,
+            )
+            b0 = int(cfgm.b // 2)
+            Lam0 = dn_map_two_channel_boundary(U, W, b0=b0, jitter=cfgm.jitter)
+            S0 = cayley_from_lambda(Lam0, eta=cfgm.eta, eps=cfgm.cayley_eps)
+            return np.empty((0, 0), dtype=np.complex128), Lam0, S0
+
         base_N = int(cfgm.N // 2) if str(bulk_mode).lower().strip() == "two_channel_symmetric" else int(cfgm.N)
         bulk_params = BulkParams(N=int(base_N), weight_k=cfgm.weight_k)
         A0 = build_A(
@@ -778,6 +1519,9 @@ def main() -> int:
         cfg_factory=None,
         *,
         use_cache: bool = True,
+        compute_magphase_diag: bool = False,
+        magphase_out_csv_name: str = "E_Qlambda_convergence_magphase.csv",
+        lambda_norm_mode: str = "none",
     ) -> None:
         """Compute interior-grid value agreement for Q_lambda on a rectangle.
 
@@ -828,6 +1572,29 @@ def main() -> int:
             top = part[int(a.size - kk) :]
             return float(np.mean(top))
 
+        def _finite_corr_and_slope(x: list[float], y: list[float]) -> tuple[float, float, int]:
+            """Return (corr, slope) for y ~ a + slope*x over finite pairs."""
+
+            if (not x) or (not y):
+                return float("nan"), float("nan"), 0
+            xx = np.asarray(x, dtype=float)
+            yy = np.asarray(y, dtype=float)
+            mask = np.isfinite(xx) & np.isfinite(yy)
+            if int(np.sum(mask)) < 3:
+                return float("nan"), float("nan"), int(np.sum(mask))
+            xx2 = xx[mask]
+            yy2 = yy[mask]
+            try:
+                corr = float(np.corrcoef(xx2, yy2)[0, 1])
+            except Exception:
+                corr = float("nan")
+            try:
+                slope, _intercept = np.polyfit(xx2, yy2, deg=1)
+                slope = float(slope)
+            except Exception:
+                slope = float("nan")
+            return corr, slope, int(xx2.size)
+
         def _complex_mean(vals: list[complex]) -> complex:
             if not vals:
                 return complex("nan")
@@ -846,6 +1613,7 @@ def main() -> int:
         free_fn = _free_mats if bool(use_cache) else getattr(_free_mats, "__wrapped__", _free_mats)
 
         stats_rows: list[dict] = []
+        magphase_rows: list[dict] = []
         for N in Ns_use:
             cfgN = cfg_factory(int(N))
             mode_tag = str(bulk_mode).lower().strip()
@@ -862,6 +1630,14 @@ def main() -> int:
                         "phi_wins": 0,
                         "total": 0,
                         "failures": 0,
+                        "logabs_q": [],
+                        "absabs_q_minus1": [],
+                        "absarg_q": [],
+                        "unit_phase_err": [],
+                        "logabs_ginf": [],
+                        "abs_q_times_ginf_minus1": [],
+                        "abs_arg_q_times_ginf": [],
+                        "unit_phase_err_q_times_ginf": [],
                     }
 
             for sig in sigs:
@@ -878,8 +1654,14 @@ def main() -> int:
                             acc[k]["failures"] = int(acc[k]["failures"]) + 1
                         continue
 
-                    phi = phi_modular(s)
-                    if (not is_finite_complex(phi)) or abs(phi) <= 1e-30:
+                    phi_norm = phi_target(s, primes=cfgN.primes, completion_mode=cfgN.completion_mode, mode=phi_target_mode)
+                    phi_sel = phi_target(s, primes=cfgN.primes, completion_mode=cfgN.completion_mode, mode=phi_select_mode)
+                    if (
+                        (not is_finite_complex(phi_norm))
+                        or abs(phi_norm) <= 1e-30
+                        or (not is_finite_complex(phi_sel))
+                        or abs(phi_sel) <= 1e-30
+                    ):
                         for k in acc:
                             acc[k]["failures"] = int(acc[k]["failures"]) + 1
                         continue
@@ -915,15 +1697,22 @@ def main() -> int:
                                 continue
 
                             # Convention 1: lambda ~ phi
-                            j_phi, _ = _min_relerr_to_target(eigs, phi)
-                            lam_phi = complex(eigs[int(j_phi)])
-                            q_phi = lam_phi / phi
+                            j_phi, _ = _min_relerr_to_target(eigs, phi_sel)
+                            lam_phi_raw = complex(eigs[int(j_phi)])
+
+                            lam_fac = lambda_norm_factor(s, lambda_norm_mode, s_ref=(lambda_norm_sref if lambda_norm_sref is not None else s0))
+                            if (not is_finite_complex(lam_fac)) or abs(lam_fac) <= 1e-300:
+                                acc[(basis, block2)]["failures"] = int(acc[(basis, block2)]["failures"]) + 1
+                                continue
+                            lam_phi = complex(lam_phi_raw * lam_fac)
+
+                            q_phi = lam_phi / phi_norm
                             err_phi = float(abs(q_phi - 1.0)) if is_finite_complex(q_phi) else float("nan")
 
                             # Local spectral gap diagnostic for the chosen eigenvalue.
                             try:
                                 if eigs.size >= 2:
-                                    diffs = np.abs(eigs - lam_phi)
+                                    diffs = np.abs(eigs - lam_phi_raw)
                                     diffs[int(j_phi)] = np.inf
                                     gap = float(np.min(diffs))
                                 else:
@@ -936,11 +1725,15 @@ def main() -> int:
                                 cast_gaps.append(gap)
 
                             # Convention 2: lambda ~ 1/phi
-                            invphi = (1.0 / phi) if phi != 0 else complex("nan")
+                            invphi = (1.0 / phi_sel) if phi_sel != 0 else complex("nan")
                             if is_finite_complex(invphi) and abs(invphi) > 0:
                                 j_inv, _ = _min_relerr_to_target(eigs, invphi)
                                 lam_inv = complex(eigs[int(j_inv)])
-                                q_inv = lam_inv * phi
+
+                                # Apply the same candidate normalization to the selected eigenvalue.
+                                lam_inv = complex(lam_inv * lam_fac)
+
+                                q_inv = lam_inv * phi_norm
                                 err_inv = float(abs(q_inv - 1.0)) if is_finite_complex(q_inv) else float("nan")
                             else:
                                 err_inv = float("nan")
@@ -976,6 +1769,80 @@ def main() -> int:
                                 assert isinstance(cast_qs, list)
                                 cast_qs.append(complex(q_phi))
 
+                                if bool(compute_magphase_diag):
+                                    try:
+                                        mag = float(abs(q_phi))
+                                    except Exception:
+                                        mag = float("nan")
+
+                                    try:
+                                        if np.isfinite(mag) and mag > 0:
+                                            cast_logabs_q = acc[(basis, block2)]["logabs_q"]
+                                            assert isinstance(cast_logabs_q, list)
+                                            cast_logabs_q.append(float(np.log(mag)))
+                                    except Exception:
+                                        pass
+
+                                    try:
+                                        if np.isfinite(mag):
+                                            cast_magerr = acc[(basis, block2)]["absabs_q_minus1"]
+                                            assert isinstance(cast_magerr, list)
+                                            cast_magerr.append(float(abs(mag - 1.0)))
+                                    except Exception:
+                                        pass
+
+                                    try:
+                                        theta = float(np.angle(q_phi))
+                                        cast_arg = acc[(basis, block2)]["absarg_q"]
+                                        assert isinstance(cast_arg, list)
+                                        cast_arg.append(float(abs(theta)))
+                                    except Exception:
+                                        pass
+
+                                    try:
+                                        if np.isfinite(mag) and mag > 0:
+                                            unit = q_phi / mag
+                                            cast_pe = acc[(basis, block2)]["unit_phase_err"]
+                                            assert isinstance(cast_pe, list)
+                                            cast_pe.append(float(abs(unit - 1.0)))
+                                    except Exception:
+                                        pass
+
+                                    try:
+                                        ginf = g_infty_classical(s)
+                                        gmag = float(abs(ginf)) if is_finite_complex(ginf) else float("nan")
+                                        if np.isfinite(gmag) and gmag > 0:
+                                            cast_lg = acc[(basis, block2)]["logabs_ginf"]
+                                            assert isinstance(cast_lg, list)
+                                            cast_lg.append(float(np.log(gmag)))
+
+                                        # Direct test: does q_phi * g_infty(s) ≈ 1?
+                                        if is_finite_complex(ginf) and is_finite_complex(q_phi):
+                                            qg = complex(q_phi * ginf)
+                                            try:
+                                                cast_qg = acc[(basis, block2)]["abs_q_times_ginf_minus1"]
+                                                assert isinstance(cast_qg, list)
+                                                cast_qg.append(float(abs(qg - 1.0)))
+                                            except Exception:
+                                                pass
+                                            try:
+                                                cast_arg_qg = acc[(basis, block2)]["abs_arg_q_times_ginf"]
+                                                assert isinstance(cast_arg_qg, list)
+                                                cast_arg_qg.append(float(abs(np.angle(qg))))
+                                            except Exception:
+                                                pass
+                                            try:
+                                                qg_mag = float(abs(qg))
+                                                if np.isfinite(qg_mag) and qg_mag > 0:
+                                                    unit_qg = qg / qg_mag
+                                                    cast_uqg = acc[(basis, block2)]["unit_phase_err_q_times_ginf"]
+                                                    assert isinstance(cast_uqg, list)
+                                                    cast_uqg.append(float(abs(unit_qg - 1.0)))
+                                            except Exception:
+                                                pass
+                                    except Exception:
+                                        pass
+
             for basis in ["rel", "incoming"]:
                 for block2 in ["plus", "minus"]:
                     a = acc[(basis, block2)]
@@ -984,6 +1851,14 @@ def main() -> int:
                     errs_inv = a["errs_inv"]
                     errs_best = a["errs_best"]
                     gaps_phi = a["gaps_phi"]
+                    logabs_q = a["logabs_q"]
+                    absabs_q_minus1 = a["absabs_q_minus1"]
+                    absarg_q = a["absarg_q"]
+                    unit_phase_err = a["unit_phase_err"]
+                    logabs_ginf = a["logabs_ginf"]
+                    abs_q_times_ginf_minus1 = a["abs_q_times_ginf_minus1"]
+                    abs_arg_q_times_ginf = a["abs_arg_q_times_ginf"]
+                    unit_phase_err_q_times_ginf = a["unit_phase_err_q_times_ginf"]
                     phi_wins = int(a["phi_wins"])
                     total = int(a["total"])
                     failures = int(a["failures"])
@@ -993,6 +1868,14 @@ def main() -> int:
                     assert isinstance(errs_inv, list)
                     assert isinstance(errs_best, list)
                     assert isinstance(gaps_phi, list)
+                    assert isinstance(logabs_q, list)
+                    assert isinstance(absabs_q_minus1, list)
+                    assert isinstance(absarg_q, list)
+                    assert isinstance(unit_phase_err, list)
+                    assert isinstance(logabs_ginf, list)
+                    assert isinstance(abs_q_times_ginf_minus1, list)
+                    assert isinstance(abs_arg_q_times_ginf, list)
+                    assert isinstance(unit_phase_err_q_times_ginf, list)
 
                     phi_med, phi_max = _finite_stats(errs_phi)
                     inv_med, inv_max = _finite_stats(errs_inv)
@@ -1046,8 +1929,84 @@ def main() -> int:
                         }
                     )
 
+                    if bool(compute_magphase_diag):
+                        # Magnitude/phase diagnostics: does log|Q| track log|g_infty|?
+                        abs_logabs_q = [float(abs(x)) for x in logabs_q if np.isfinite(x)]
+                        absarg_q_f = [float(x) for x in absarg_q if np.isfinite(x)]
+                        unit_phase_err_f = [float(x) for x in unit_phase_err if np.isfinite(x)]
+                        magerr_f = [float(x) for x in absabs_q_minus1 if np.isfinite(x)]
+                        qg_err_f = [float(x) for x in abs_q_times_ginf_minus1 if np.isfinite(x)]
+                        qg_arg_f = [float(x) for x in abs_arg_q_times_ginf if np.isfinite(x)]
+                        qg_unit_f = [float(x) for x in unit_phase_err_q_times_ginf if np.isfinite(x)]
+
+                        abslog_med, abslog_max = _finite_stats(abs_logabs_q)
+                        abslog_p95 = _finite_percentile(abs_logabs_q, 95.0)
+                        arg_med, arg_max = _finite_stats(absarg_q_f)
+                        arg_p95 = _finite_percentile(absarg_q_f, 95.0)
+                        unit_med, unit_max = _finite_stats(unit_phase_err_f)
+                        unit_p95 = _finite_percentile(unit_phase_err_f, 95.0)
+                        magerr_med, magerr_max = _finite_stats(magerr_f)
+                        magerr_p95 = _finite_percentile(magerr_f, 95.0)
+
+                        qg_err_med, qg_err_max = _finite_stats(qg_err_f)
+                        qg_err_p95 = _finite_percentile(qg_err_f, 95.0)
+                        qg_arg_med, qg_arg_max = _finite_stats(qg_arg_f)
+                        qg_arg_p95 = _finite_percentile(qg_arg_f, 95.0)
+                        qg_unit_med, qg_unit_max = _finite_stats(qg_unit_f)
+                        qg_unit_p95 = _finite_percentile(qg_unit_f, 95.0)
+
+                        corr, slope, n_pairs = _finite_corr_and_slope(logabs_ginf, logabs_q)
+                        g_med, _ = _finite_stats(logabs_ginf)
+                        qlog_med, _ = _finite_stats(logabs_q)
+
+                        magphase_rows.append(
+                            {
+                                "source": str(source_label),
+                                "N": int(N),
+                                "basis": str(basis),
+                                "block": str(block2),
+                                "sigma_min": float(rect_in[0]),
+                                "sigma_max": float(rect_in[1]),
+                                "t_min": float(rect_in[2]),
+                                "t_max": float(rect_in[3]),
+                                "n_sigma": int(n_sigma),
+                                "n_t": int(n_t),
+                                "points_total": int(total),
+                                "failures": int(failures),
+                                "logabs_Q_median": float(qlog_med),
+                                "abs_logabs_Q_median": float(abslog_med),
+                                "abs_logabs_Q_p95": float(abslog_p95),
+                                "abs_logabs_Q_max": float(abslog_max),
+                                "abs_absQ_minus1_median": float(magerr_med),
+                                "abs_absQ_minus1_p95": float(magerr_p95),
+                                "abs_absQ_minus1_max": float(magerr_max),
+                                "abs_argQ_median": float(arg_med),
+                                "abs_argQ_p95": float(arg_p95),
+                                "abs_argQ_max": float(arg_max),
+                                "unit_phase_err_median": float(unit_med),
+                                "unit_phase_err_p95": float(unit_p95),
+                                "unit_phase_err_max": float(unit_max),
+                                "abs_q_times_ginf_minus1_median": float(qg_err_med),
+                                "abs_q_times_ginf_minus1_p95": float(qg_err_p95),
+                                "abs_q_times_ginf_minus1_max": float(qg_err_max),
+                                "abs_arg_q_times_ginf_median": float(qg_arg_med),
+                                "abs_arg_q_times_ginf_p95": float(qg_arg_p95),
+                                "abs_arg_q_times_ginf_max": float(qg_arg_max),
+                                "unit_phase_err_q_times_ginf_median": float(qg_unit_med),
+                                "unit_phase_err_q_times_ginf_p95": float(qg_unit_p95),
+                                "unit_phase_err_q_times_ginf_max": float(qg_unit_max),
+                                "logabs_ginf_median": float(g_med),
+                                "logabs_corr": float(corr),
+                                "logabs_slope": float(slope),
+                                "logabs_pairs": int(n_pairs),
+                            }
+                        )
+
         if stats_rows:
             pd.DataFrame(stats_rows).to_csv(os.path.join(out_dir, str(out_csv_name)), index=False)
+
+        if bool(compute_magphase_diag) and magphase_rows:
+            pd.DataFrame(magphase_rows).to_csv(os.path.join(out_dir, str(magphase_out_csv_name)), index=False)
 
     def _compute_q_lambda_value_agreement_single(
         rect_in: tuple[float, float, float, float],
@@ -1104,8 +2063,14 @@ def main() -> int:
                     failures += 1
                     continue
 
-                phi = phi_modular(s)
-                if (not is_finite_complex(phi)) or abs(phi) <= 1e-30:
+                phi_norm = phi_target(s, primes=cfgN.primes, completion_mode=cfgN.completion_mode, mode=phi_target_mode)
+                phi_sel = phi_target(s, primes=cfgN.primes, completion_mode=cfgN.completion_mode, mode=phi_select_mode)
+                if (
+                    (not is_finite_complex(phi_norm))
+                    or abs(phi_norm) <= 1e-30
+                    or (not is_finite_complex(phi_sel))
+                    or abs(phi_sel) <= 1e-30
+                ):
                     failures += 1
                     continue
 
@@ -1119,9 +2084,9 @@ def main() -> int:
                     failures += 1
                     continue
 
-                j_phi, _ = _min_relerr_to_target(eigs, phi)
+                j_phi, _ = _min_relerr_to_target(eigs, phi_sel)
                 lam_phi = complex(eigs[int(j_phi)])
-                q_phi = lam_phi / phi
+                q_phi = lam_phi / phi_norm
                 err_phi = float(abs(q_phi - 1.0)) if is_finite_complex(q_phi) else float("nan")
                 if not np.isfinite(err_phi):
                     failures += 1
@@ -1243,8 +2208,14 @@ def main() -> int:
                         acc[k]["failures"] = int(acc[k]["failures"]) + 1
                     continue
 
-                phi = phi_modular(s)
-                if (not is_finite_complex(phi)) or abs(phi) <= 1e-30:
+                phi_norm = phi_target(s, primes=cfgN.primes, completion_mode=cfgN.completion_mode, mode=phi_target_mode)
+                phi_sel = phi_target(s, primes=cfgN.primes, completion_mode=cfgN.completion_mode, mode=phi_select_mode)
+                if (
+                    (not is_finite_complex(phi_norm))
+                    or abs(phi_norm) <= 1e-30
+                    or (not is_finite_complex(phi_sel))
+                    or abs(phi_sel) <= 1e-30
+                ):
                     for k in acc:
                         acc[k]["failures"] = int(acc[k]["failures"]) + 1
                     continue
@@ -1277,9 +2248,9 @@ def main() -> int:
                             acc[(basis, block2)]["failures"] = int(acc[(basis, block2)]["failures"]) + 1
                             continue
 
-                        j_phi, _ = _min_relerr_to_target(eigs, phi)
+                        j_phi, _ = _min_relerr_to_target(eigs, phi_sel)
                         lam_phi = complex(eigs[int(j_phi)])
-                        q_phi = lam_phi / phi
+                        q_phi = lam_phi / phi_norm
                         if not is_finite_complex(q_phi):
                             acc[(basis, block2)]["failures"] = int(acc[(basis, block2)]["failures"]) + 1
                             continue
@@ -1418,8 +2389,14 @@ def main() -> int:
                 else:
                     M = Srel
 
-                phi = phi_modular(s)
-                if (not is_finite_complex(phi)) or abs(phi) <= 1e-30:
+                phi_norm = phi_target(s, primes=cfgW.primes, completion_mode=cfgW.completion_mode, mode=phi_target_mode)
+                phi_sel = phi_target(s, primes=cfgW.primes, completion_mode=cfgW.completion_mode, mode=phi_select_mode)
+                if (
+                    (not is_finite_complex(phi_norm))
+                    or abs(phi_norm) <= 1e-30
+                    or (not is_finite_complex(phi_sel))
+                    or abs(phi_sel) <= 1e-30
+                ):
                     raise ValueError("bad phi")
 
                 B = _swap_block_matrix(M, "plus" if block_key == "+" else "minus", b0=b0)
@@ -1428,7 +2405,7 @@ def main() -> int:
                     raise ValueError("no eigs")
 
                 if i == 0 or not is_finite_complex(prev):
-                    j_idx, _ = _min_relerr_to_target(eigs, phi)
+                    j_idx, _ = _min_relerr_to_target(eigs, phi_sel)
                 elif i == (len(ptsW) - 1) and is_finite_complex(first):
                     j_idx = _nearest_neighbor_index(eigs, first)
                 else:
@@ -1437,7 +2414,10 @@ def main() -> int:
                 if i == 0:
                     first = lam
                 prev = lam
-                qs.append(lam / phi)
+                lam_fac = lambda_norm_factor(s, lambda_norm_mode, s_ref=(lambda_norm_sref if lambda_norm_sref is not None else s0))
+                if (not is_finite_complex(lam_fac)) or abs(lam_fac) <= 1e-300:
+                    raise ValueError("bad lambda_norm_factor")
+                qs.append((lam * lam_fac) / phi_norm)
             except Exception:
                 qs.append(complex("nan"))
                 failures += 1
@@ -1557,8 +2537,14 @@ def main() -> int:
                                     else:
                                         M = Srel
 
-                                    phi = phi_modular(s)
-                                    if (not is_finite_complex(phi)) or abs(phi) <= 1e-30:
+                                    phi_norm = phi_target(s, primes=cfgW.primes, completion_mode=cfgW.completion_mode, mode=phi_target_mode)
+                                    phi_sel = phi_target(s, primes=cfgW.primes, completion_mode=cfgW.completion_mode, mode=phi_select_mode)
+                                    if (
+                                        (not is_finite_complex(phi_norm))
+                                        or abs(phi_norm) <= 1e-30
+                                        or (not is_finite_complex(phi_sel))
+                                        or abs(phi_sel) <= 1e-30
+                                    ):
                                         raise ValueError("bad phi")
 
                                     b0 = int(cfgW.b // 2)
@@ -1568,7 +2554,7 @@ def main() -> int:
                                         raise ValueError("no eigs")
 
                                     if i == 0 or not is_finite_complex(prev):
-                                        j_idx, _ = _min_relerr_to_target(eigs, phi)
+                                        j_idx, _ = _min_relerr_to_target(eigs, phi_sel)
                                     elif i == (len(ptsW) - 1) and is_finite_complex(first):
                                         j_idx = _nearest_neighbor_index(eigs, first)
                                     else:
@@ -1577,7 +2563,10 @@ def main() -> int:
                                     if i == 0:
                                         first = lam
                                     prev = lam
-                                    qs.append(lam / phi)
+                                    lam_fac = lambda_norm_factor(s, lambda_norm_mode, s_ref=(lambda_norm_sref if lambda_norm_sref is not None else s0))
+                                    if (not is_finite_complex(lam_fac)) or abs(lam_fac) <= 1e-300:
+                                        raise ValueError("bad lambda_norm_factor")
+                                    qs.append((lam * lam_fac) / phi_norm)
                                 except Exception:
                                     qs.append(complex("nan"))
                                     failures += 1
@@ -1980,10 +2969,15 @@ def main() -> int:
             cfg_factory_use = None
 
         conv_do_winding = bool(config.get("convergence_do_winding", False))
+        conv_do_magphase_diag = bool(config.get("convergence_do_magphase_diag", True))
         conv_wind_basis = str(config.get("convergence_wind_basis", "incoming")).strip().lower()
         conv_wind_block = str(config.get("convergence_wind_block", "plus")).strip().lower()
         conv_wind_n_edge = int(config.get("convergence_wind_n_edge", 800))
         conv_wind_out = str(config.get("convergence_wind_out_csv", "E_Qlambda_convergence_winding.csv"))
+        conv_emit_boundary_samples = bool(config.get("convergence_emit_boundary_samples", False))
+        conv_boundary_samples_out = str(
+            config.get("convergence_boundary_samples_out_csv", "E_Qlambda_convergence_boundary_samples.csv")
+        )
         if conv_wind_basis not in {"incoming", "rel"}:
             raise ValueError("convergence_wind_basis must be 'incoming' or 'rel'")
         if conv_wind_block not in {"plus", "minus", "+", "-"}:
@@ -1998,79 +2992,672 @@ def main() -> int:
             source_label="convergence_sweep",
             cfg_factory=cfg_factory_use,
             use_cache=False,
+            compute_magphase_diag=conv_do_magphase_diag,
+            magphase_out_csv_name="E_Qlambda_convergence_magphase.csv",
+            lambda_norm_mode=lambda_norm_mode,
         )
+
+        if bool(do_critical_line_fingerprint):
+            if critical_line_nt < 2:
+                raise ValueError("critical_line_nt must be >= 2")
+            if critical_line_t_max <= critical_line_t_min:
+                raise ValueError("critical_line_t_max must exceed critical_line_t_min")
+            if critical_line_basis not in {"incoming", "rel"}:
+                raise ValueError("critical_line_basis must be 'incoming' or 'rel'")
+            if critical_line_block not in {"plus", "minus", "+", "-"}:
+                raise ValueError("critical_line_block must be 'plus' or 'minus'")
+
+            fp_block2 = "plus" if critical_line_block in {"plus", "+"} else "minus"
+            t_vals = np.linspace(float(critical_line_t_min), float(critical_line_t_max), int(critical_line_nt), dtype=float)
+
+            # Avoid caching huge matrices when doing dense scans.
+            model_fn_fp = getattr(_model_mats, "__wrapped__", _model_mats)
+            free_fn_fp = getattr(_free_mats, "__wrapped__", _free_mats)
+
+            point_rows: list[dict] = []
+            summary_acc: dict[int, dict[str, list[float]]] = {}
+            summary_counts: dict[int, dict[str, int]] = {}
+
+            cand_acc: dict[tuple[int, str], dict[str, list[float]]] = {}
+            cand_counts: dict[tuple[int, str], dict[str, int]] = {}
+
+            for N in [int(x) for x in Ns]:
+                cfgN = (cfg_factory_use(int(N)) if cfg_factory_use is not None else _mk_cfg(int(N)))
+                mode_tag = str(bulk_mode).lower().strip()
+                b0 = int(cfgN.b // 2) if mode_tag == "two_channel_symmetric" else int(cfgN.b)
+
+                summary_acc[int(N)] = {
+                    "abs_absQ_minus1": [],
+                    "abs_argQ": [],
+                    "unit_phase_err": [],
+                    "abs_q_times_ginf_minus1": [],
+                    "abs_arg_q_times_ginf": [],
+                    "unit_phase_err_q_times_ginf": [],
+                    "logabs_q": [],
+                    "logabs_ginf": [],
+                    "gap_phi": [],
+                }
+                summary_counts[int(N)] = {"total": 0, "failures": 0}
+
+                if bool(critical_line_eval_candidates):
+                    for cm in critical_line_candidates:
+                        key = (int(N), str(cm))
+                        cand_acc[key] = {
+                            "abs_absQ_minus1": [],
+                            "abs_argQ": [],
+                            "unit_phase_err": [],
+                            "abs_q_times_ginf_minus1": [],
+                            "logabs_q": [],
+                            "logabs_ginf": [],
+                        }
+                        cand_counts[key] = {"total": 0, "failures": 0}
+
+                for tt in t_vals:
+                    s = complex(float(critical_line_sigma), float(tt))
+                    summary_counts[int(N)]["total"] += 1
+                    if bool(critical_line_eval_candidates):
+                        for cm in critical_line_candidates:
+                            cand_counts[(int(N), str(cm))]["total"] += 1
+
+                    try:
+                        _, Lam, Sm = model_fn_fp(s, cfgN)
+                        _, _, S0 = free_fn_fp(s, cfgN)
+                        Srel = np.linalg.solve(np.asarray(S0, dtype=np.complex128).T, np.asarray(Sm, dtype=np.complex128).T).T
+                    except Exception:
+                        summary_counts[int(N)]["failures"] += 1
+                        if bool(critical_line_eval_candidates):
+                            for cm in critical_line_candidates:
+                                cand_counts[(int(N), str(cm))]["failures"] += 1
+                        point_rows.append(
+                            {
+                                "source": "critical_line_fingerprint",
+                                "N": int(N),
+                                "basis": str(critical_line_basis),
+                                "block": str(fp_block2),
+                                "sigma": float(np.real(s)),
+                                "t": float(np.imag(s)),
+                                "status": "error",
+                                "err": "model_mats",
+                            }
+                        )
+                        continue
+
+                    phi_norm = phi_target(s, primes=cfgN.primes, completion_mode=cfgN.completion_mode, mode=phi_target_mode)
+                    phi_sel = phi_target(s, primes=cfgN.primes, completion_mode=cfgN.completion_mode, mode=phi_select_mode)
+                    if (
+                        (not is_finite_complex(phi_norm))
+                        or abs(phi_norm) <= 1e-30
+                        or (not is_finite_complex(phi_sel))
+                        or abs(phi_sel) <= 1e-30
+                    ):
+                        summary_counts[int(N)]["failures"] += 1
+                        if bool(critical_line_eval_candidates):
+                            for cm in critical_line_candidates:
+                                cand_counts[(int(N), str(cm))]["failures"] += 1
+                        point_rows.append(
+                            {
+                                "source": "critical_line_fingerprint",
+                                "N": int(N),
+                                "basis": str(critical_line_basis),
+                                "block": str(fp_block2),
+                                "sigma": float(np.real(s)),
+                                "t": float(np.imag(s)),
+                                "status": "error",
+                                "err": "phi_bad",
+                                "phi_norm_abs": float(abs(phi_norm)) if is_finite_complex(phi_norm) else float("nan"),
+                                "phi_sel_abs": float(abs(phi_sel)) if is_finite_complex(phi_sel) else float("nan"),
+                            }
+                        )
+                        continue
+
+                    M_rel = np.asarray(Srel, dtype=np.complex128)
+                    M_in: np.ndarray | None
+                    try:
+                        nb = int(Lam.shape[0])
+                        Tin_eta = (Lam + 1j * float(cfgN.eta) * np.eye(nb, dtype=np.complex128)).astype(np.complex128)
+                        if float(cfgN.cayley_eps) != 0.0:
+                            Tin_eta = (Tin_eta + float(cfgN.cayley_eps) * np.eye(nb, dtype=np.complex128)).astype(np.complex128)
+                        M_in = np.linalg.solve(Tin_eta, (M_rel @ Tin_eta)).astype(np.complex128)
+                    except Exception:
+                        M_in = None
+
+                    M = M_rel if critical_line_basis == "rel" else M_in
+                    if M is None:
+                        summary_counts[int(N)]["failures"] += 1
+                        if bool(critical_line_eval_candidates):
+                            for cm in critical_line_candidates:
+                                cand_counts[(int(N), str(cm))]["failures"] += 1
+                        point_rows.append(
+                            {
+                                "source": "critical_line_fingerprint",
+                                "N": int(N),
+                                "basis": str(critical_line_basis),
+                                "block": str(fp_block2),
+                                "sigma": float(np.real(s)),
+                                "t": float(np.imag(s)),
+                                "status": "error",
+                                "err": "incoming_unavailable",
+                            }
+                        )
+                        continue
+
+                    try:
+                        B = _swap_block_matrix(M, fp_block2, b0=b0)
+                        eigs = np.asarray(np.linalg.eigvals(B), dtype=np.complex128).ravel()
+                    except Exception:
+                        summary_counts[int(N)]["failures"] += 1
+                        if bool(critical_line_eval_candidates):
+                            for cm in critical_line_candidates:
+                                cand_counts[(int(N), str(cm))]["failures"] += 1
+                        point_rows.append(
+                            {
+                                "source": "critical_line_fingerprint",
+                                "N": int(N),
+                                "basis": str(critical_line_basis),
+                                "block": str(fp_block2),
+                                "sigma": float(np.real(s)),
+                                "t": float(np.imag(s)),
+                                "status": "error",
+                                "err": "eig",
+                            }
+                        )
+                        continue
+
+                    if eigs.size == 0:
+                        summary_counts[int(N)]["failures"] += 1
+                        if bool(critical_line_eval_candidates):
+                            for cm in critical_line_candidates:
+                                cand_counts[(int(N), str(cm))]["failures"] += 1
+                        point_rows.append(
+                            {
+                                "source": "critical_line_fingerprint",
+                                "N": int(N),
+                                "basis": str(critical_line_basis),
+                                "block": str(fp_block2),
+                                "sigma": float(np.real(s)),
+                                "t": float(np.imag(s)),
+                                "status": "error",
+                                "err": "no_eigs",
+                            }
+                        )
+                        continue
+
+                    try:
+                        j_phi, relerr_sel = _min_relerr_to_target(eigs, phi_sel)
+                        lam_raw = complex(eigs[int(j_phi)])
+                    except Exception:
+                        summary_counts[int(N)]["failures"] += 1
+                        if bool(critical_line_eval_candidates):
+                            for cm in critical_line_candidates:
+                                cand_counts[(int(N), str(cm))]["failures"] += 1
+                        point_rows.append(
+                            {
+                                "source": "critical_line_fingerprint",
+                                "N": int(N),
+                                "basis": str(critical_line_basis),
+                                "block": str(fp_block2),
+                                "sigma": float(np.real(s)),
+                                "t": float(np.imag(s)),
+                                "status": "error",
+                                "err": "pick",
+                            }
+                        )
+                        continue
+
+                    try:
+                        if eigs.size >= 2:
+                            diffs = np.abs(eigs - lam_raw)
+                            diffs[int(j_phi)] = np.inf
+                            gap = float(np.min(diffs))
+                        else:
+                            gap = float("nan")
+                    except Exception:
+                        gap = float("nan")
+
+                    try:
+                        lam_fac = lambda_norm_factor(s, lambda_norm_mode, s_ref=(lambda_norm_sref if lambda_norm_sref is not None else s0))
+                        if (not is_finite_complex(lam_fac)) or abs(lam_fac) <= 1e-300:
+                            raise ValueError("bad lambda normalization factor")
+                        lam = complex(lam_raw * lam_fac)
+                        q = complex(lam / phi_norm)
+                    except Exception:
+                        summary_counts[int(N)]["failures"] += 1
+                        if bool(critical_line_eval_candidates):
+                            for cm in critical_line_candidates:
+                                cand_counts[(int(N), str(cm))]["failures"] += 1
+                        point_rows.append(
+                            {
+                                "source": "critical_line_fingerprint",
+                                "N": int(N),
+                                "basis": str(critical_line_basis),
+                                "block": str(fp_block2),
+                                "sigma": float(np.real(s)),
+                                "t": float(np.imag(s)),
+                                "status": "error",
+                                "err": "norm_or_q",
+                            }
+                        )
+                        continue
+
+                    ginf = g_infty_classical(s)
+                    qg = complex(q * ginf) if is_finite_complex(q) and is_finite_complex(ginf) else complex("nan")
+
+                    if bool(critical_line_eval_candidates):
+                        for cm in critical_line_candidates:
+                            try:
+                                fac_c = lambda_norm_factor(s, str(cm), s_ref=(lambda_norm_sref if lambda_norm_sref is not None else s0))
+                                if (not is_finite_complex(fac_c)) or abs(fac_c) <= 1e-300:
+                                    raise ValueError("bad candidate factor")
+                                qc = complex((lam_raw * fac_c) / phi_norm)
+                            except Exception:
+                                cand_counts[(int(N), str(cm))]["failures"] += 1
+                                continue
+
+                            absQc = float(abs(qc)) if is_finite_complex(qc) else float("nan")
+                            abs_absQc_minus1 = float(abs(absQc - 1.0)) if np.isfinite(absQc) else float("nan")
+                            abs_argQc = float(abs(np.angle(qc))) if is_finite_complex(qc) else float("nan")
+                            if np.isfinite(absQc) and absQc > 0 and is_finite_complex(qc):
+                                unitc = qc / absQc
+                                unit_phase_err_c = float(abs(unitc - 1.0))
+                            else:
+                                unit_phase_err_c = float("nan")
+                            qgc = complex(qc * ginf) if is_finite_complex(qc) and is_finite_complex(ginf) else complex("nan")
+                            abs_qgc_minus1 = float(abs(qgc - 1.0)) if is_finite_complex(qgc) else float("nan")
+                            logabs_qc = float(np.log(absQc)) if np.isfinite(absQc) and absQc > 0 else float("nan")
+                            try:
+                                gmag = float(abs(ginf)) if is_finite_complex(ginf) else float("nan")
+                                logabs_g = float(np.log(gmag)) if np.isfinite(gmag) and gmag > 0 else float("nan")
+                            except Exception:
+                                logabs_g = float("nan")
+
+                            key = (int(N), str(cm))
+                            if np.isfinite(abs_absQc_minus1):
+                                cand_acc[key]["abs_absQ_minus1"].append(float(abs_absQc_minus1))
+                            if np.isfinite(abs_argQc):
+                                cand_acc[key]["abs_argQ"].append(float(abs_argQc))
+                            if np.isfinite(unit_phase_err_c):
+                                cand_acc[key]["unit_phase_err"].append(float(unit_phase_err_c))
+                            if np.isfinite(abs_qgc_minus1):
+                                cand_acc[key]["abs_q_times_ginf_minus1"].append(float(abs_qgc_minus1))
+                            if np.isfinite(logabs_qc):
+                                cand_acc[key]["logabs_q"].append(float(logabs_qc))
+                            if np.isfinite(logabs_g):
+                                cand_acc[key]["logabs_ginf"].append(float(logabs_g))
+
+                    absQ = float(abs(q)) if is_finite_complex(q) else float("nan")
+                    abs_absQ_minus1 = float(abs(absQ - 1.0)) if np.isfinite(absQ) else float("nan")
+                    abs_argQ = float(abs(np.angle(q))) if is_finite_complex(q) else float("nan")
+                    if np.isfinite(absQ) and absQ > 0 and is_finite_complex(q):
+                        unit = q / absQ
+                        unit_phase_err = float(abs(unit - 1.0))
+                    else:
+                        unit_phase_err = float("nan")
+
+                    abs_q_times_ginf_minus1 = float(abs(qg - 1.0)) if is_finite_complex(qg) else float("nan")
+                    abs_arg_q_times_ginf = float(abs(np.angle(qg))) if is_finite_complex(qg) else float("nan")
+                    try:
+                        qg_mag = float(abs(qg)) if is_finite_complex(qg) else float("nan")
+                        if np.isfinite(qg_mag) and qg_mag > 0:
+                            unit_qg = qg / qg_mag
+                            unit_phase_err_q_times_ginf = float(abs(unit_qg - 1.0))
+                        else:
+                            unit_phase_err_q_times_ginf = float("nan")
+                    except Exception:
+                        unit_phase_err_q_times_ginf = float("nan")
+
+                    logabs_q = float(np.log(absQ)) if np.isfinite(absQ) and absQ > 0 else float("nan")
+                    try:
+                        gmag = float(abs(ginf)) if is_finite_complex(ginf) else float("nan")
+                        logabs_ginf = float(np.log(gmag)) if np.isfinite(gmag) and gmag > 0 else float("nan")
+                    except Exception:
+                        logabs_ginf = float("nan")
+
+                    # Accumulate summary stats.
+                    if np.isfinite(abs_absQ_minus1):
+                        summary_acc[int(N)]["abs_absQ_minus1"].append(float(abs_absQ_minus1))
+                    if np.isfinite(abs_argQ):
+                        summary_acc[int(N)]["abs_argQ"].append(float(abs_argQ))
+                    if np.isfinite(unit_phase_err):
+                        summary_acc[int(N)]["unit_phase_err"].append(float(unit_phase_err))
+                    if np.isfinite(abs_q_times_ginf_minus1):
+                        summary_acc[int(N)]["abs_q_times_ginf_minus1"].append(float(abs_q_times_ginf_minus1))
+                    if np.isfinite(abs_arg_q_times_ginf):
+                        summary_acc[int(N)]["abs_arg_q_times_ginf"].append(float(abs_arg_q_times_ginf))
+                    if np.isfinite(unit_phase_err_q_times_ginf):
+                        summary_acc[int(N)]["unit_phase_err_q_times_ginf"].append(float(unit_phase_err_q_times_ginf))
+                    if np.isfinite(logabs_q):
+                        summary_acc[int(N)]["logabs_q"].append(float(logabs_q))
+                    if np.isfinite(logabs_ginf):
+                        summary_acc[int(N)]["logabs_ginf"].append(float(logabs_ginf))
+                    if np.isfinite(gap):
+                        summary_acc[int(N)]["gap_phi"].append(float(gap))
+
+                    point_rows.append(
+                        {
+                            "source": "critical_line_fingerprint",
+                            "N": int(N),
+                            "basis": str(critical_line_basis),
+                            "block": str(fp_block2),
+                            "sigma": float(np.real(s)),
+                            "t": float(np.imag(s)),
+                            "phi_target_mode": str(phi_target_mode),
+                            "phi_select_mode": str(phi_select_mode),
+                            "lambda_norm_mode": str(lambda_norm_mode),
+                            "relerr_sel": float(relerr_sel) if np.isfinite(relerr_sel) else float("nan"),
+                            "gap_phi": float(gap) if np.isfinite(gap) else float("nan"),
+                            "lam_raw_re": float(np.real(lam_raw)),
+                            "lam_raw_im": float(np.imag(lam_raw)),
+                            "lam_fac_re": float(np.real(lam_fac)) if is_finite_complex(lam_fac) else float("nan"),
+                            "lam_fac_im": float(np.imag(lam_fac)) if is_finite_complex(lam_fac) else float("nan"),
+                            "q_re": float(np.real(q)) if is_finite_complex(q) else float("nan"),
+                            "q_im": float(np.imag(q)) if is_finite_complex(q) else float("nan"),
+                            "absQ": float(absQ),
+                            "abs_absQ_minus1": float(abs_absQ_minus1),
+                            "abs_argQ": float(abs_argQ),
+                            "unit_phase_err": float(unit_phase_err),
+                            "abs_q_times_ginf_minus1": float(abs_q_times_ginf_minus1),
+                            "abs_arg_q_times_ginf": float(abs_arg_q_times_ginf),
+                            "unit_phase_err_q_times_ginf": float(unit_phase_err_q_times_ginf),
+                            "logabs_Q": float(logabs_q),
+                            "logabs_ginf": float(logabs_ginf),
+                            "status": "ok",
+                            "err": "",
+                        }
+                    )
+
+            if point_rows:
+                pd.DataFrame(point_rows).to_csv(os.path.join(out_dir, critical_line_points_out_csv), index=False)
+
+            if bool(config.get("critical_line_do_pi_ramp_diagnostics", False)):
+                _write_pi_ramp_diagnostics_from_points_csv(
+                    out_dir,
+                    config,
+                    points_csv_name=str(critical_line_points_out_csv),
+                )
+
+                # Optional secondary (relaxed-gamma) witness emission. This is meant to make
+                # empty/fragile strict intersections explicit while still providing an auditable
+                # numerical witness that the ramp exists at a less stringent health threshold.
+                if bool(config.get("critical_line_pi_ramp_emit_secondary", False)):
+                    gamma2 = float(config.get("critical_line_pi_ramp_gamma_secondary", 0.03))
+                    out_fit2 = str(config.get("critical_line_pi_ramp_fit_secondary_out_csv", "E_Qlambda_pi_ramp_fit_relaxed.csv"))
+                    out_res2 = str(config.get("critical_line_phase_residual_secondary_out_csv", "E_Qlambda_phase_residual_table_relaxed.csv"))
+                    _write_pi_ramp_diagnostics_from_points_csv(
+                        out_dir,
+                        config,
+                        points_csv_name=str(critical_line_points_out_csv),
+                        gamma_override=gamma2,
+                        out_fit_override=out_fit2,
+                        out_res_override=out_res2,
+                        relaxed_tag="secondary",
+                    )
+
+            def _finite_stats(vals: list[float]) -> tuple[float, float]:
+                if not vals:
+                    return (float("nan"), float("nan"))
+                a = np.asarray(vals, dtype=float)
+                a = a[np.isfinite(a)]
+                if a.size == 0:
+                    return (float("nan"), float("nan"))
+                return (float(np.median(a)), float(np.max(a)))
+
+            def _finite_percentile(vals: list[float], q: float) -> float:
+                if not vals:
+                    return float("nan")
+                a = np.asarray(vals, dtype=float)
+                a = a[np.isfinite(a)]
+                if a.size == 0:
+                    return float("nan")
+                return float(np.percentile(a, float(q)))
+
+            def _finite_corr(x: list[float], y: list[float]) -> tuple[float, int]:
+                if (not x) or (not y):
+                    return float("nan"), 0
+                xx = np.asarray(x, dtype=float)
+                yy = np.asarray(y, dtype=float)
+                mask = np.isfinite(xx) & np.isfinite(yy)
+                if int(np.sum(mask)) < 3:
+                    return float("nan"), int(np.sum(mask))
+                xx2 = xx[mask]
+                yy2 = yy[mask]
+                try:
+                    corr = float(np.corrcoef(xx2, yy2)[0, 1])
+                except Exception:
+                    corr = float("nan")
+                return corr, int(xx2.size)
+
+            summary_rows: list[dict] = []
+            # Convention bookkeeping: most formulas in this harness are written in s.
+            # Accept legacy/short key 'arch_arg' as an alias to prevent ambiguity.
+            critical_line_arch_arg = str(config.get("critical_line_arch_arg", config.get("arch_arg", "s")))
+            for N in [int(x) for x in Ns]:
+                accN = summary_acc.get(int(N), {})
+                cntN = summary_counts.get(int(N), {"total": 0, "failures": 0})
+                abs_med, abs_max = _finite_stats(list(accN.get("abs_absQ_minus1", [])))
+                abs_p95 = _finite_percentile(list(accN.get("abs_absQ_minus1", [])), 95.0)
+                arg_med, arg_max = _finite_stats(list(accN.get("abs_argQ", [])))
+                arg_p95 = _finite_percentile(list(accN.get("abs_argQ", [])), 95.0)
+                unit_med, unit_max = _finite_stats(list(accN.get("unit_phase_err", [])))
+                unit_p95 = _finite_percentile(list(accN.get("unit_phase_err", [])), 95.0)
+                qg_med, qg_max = _finite_stats(list(accN.get("abs_q_times_ginf_minus1", [])))
+                qg_p95 = _finite_percentile(list(accN.get("abs_q_times_ginf_minus1", [])), 95.0)
+                gap_med, _ = _finite_stats(list(accN.get("gap_phi", [])))
+                gap_min = float(np.min(np.asarray(list(accN.get("gap_phi", [])), dtype=float))) if accN.get("gap_phi") else float("nan")
+                corr, n_pairs = _finite_corr(list(accN.get("logabs_ginf", [])), list(accN.get("logabs_q", [])))
+
+                summary_rows.append(
+                    {
+                        "source": "critical_line_fingerprint",
+                        "N": int(N),
+                        "basis": str(critical_line_basis),
+                        "block": str(fp_block2),
+                        "sigma": float(critical_line_sigma),
+                        "t_min": float(critical_line_t_min),
+                        "t_max": float(critical_line_t_max),
+                        "nt": int(critical_line_nt),
+                        "phi_target_mode": str(phi_target_mode),
+                        "phi_select_mode": str(phi_select_mode),
+                        "lambda_norm_mode": str(lambda_norm_mode),
+                        "arch_arg": str(critical_line_arch_arg),
+                        "points_total": int(cntN.get("total", 0)),
+                        "failures": int(cntN.get("failures", 0)),
+                        "abs_absQ_minus1_median": float(abs_med),
+                        "abs_absQ_minus1_p95": float(abs_p95),
+                        "abs_absQ_minus1_max": float(abs_max),
+                        "abs_argQ_median": float(arg_med),
+                        "abs_argQ_p95": float(arg_p95),
+                        "abs_argQ_max": float(arg_max),
+                        "unit_phase_err_median": float(unit_med),
+                        "unit_phase_err_p95": float(unit_p95),
+                        "unit_phase_err_max": float(unit_max),
+                        "abs_q_times_ginf_minus1_median": float(qg_med),
+                        "abs_q_times_ginf_minus1_p95": float(qg_p95),
+                        "abs_q_times_ginf_minus1_max": float(qg_max),
+                        "gap_phi_median": float(gap_med),
+                        "gap_phi_min": float(gap_min),
+                        "logabs_corr": float(corr),
+                        "logabs_pairs": int(n_pairs),
+                    }
+                )
+
+            if summary_rows:
+                pd.DataFrame(summary_rows).to_csv(os.path.join(out_dir, critical_line_summary_out_csv), index=False)
+
+            if bool(critical_line_eval_candidates) and cand_acc:
+                cand_rows: list[dict] = []
+                for (N, cm), accC in sorted(cand_acc.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+                    cntC = cand_counts.get((int(N), str(cm)), {"total": 0, "failures": 0})
+                    abs_med, abs_max = _finite_stats(list(accC.get("abs_absQ_minus1", [])))
+                    abs_p95 = _finite_percentile(list(accC.get("abs_absQ_minus1", [])), 95.0)
+                    arg_med, arg_max = _finite_stats(list(accC.get("abs_argQ", [])))
+                    arg_p95 = _finite_percentile(list(accC.get("abs_argQ", [])), 95.0)
+                    unit_med, unit_max = _finite_stats(list(accC.get("unit_phase_err", [])))
+                    unit_p95 = _finite_percentile(list(accC.get("unit_phase_err", [])), 95.0)
+                    qg_med, qg_max = _finite_stats(list(accC.get("abs_q_times_ginf_minus1", [])))
+                    qg_p95 = _finite_percentile(list(accC.get("abs_q_times_ginf_minus1", [])), 95.0)
+                    corr, n_pairs = _finite_corr(list(accC.get("logabs_ginf", [])), list(accC.get("logabs_q", [])))
+
+                    cand_rows.append(
+                        {
+                            "source": "critical_line_candidates",
+                            "N": int(N),
+                            "basis": str(critical_line_basis),
+                            "block": str(fp_block2),
+                            "sigma": float(critical_line_sigma),
+                            "t_min": float(critical_line_t_min),
+                            "t_max": float(critical_line_t_max),
+                            "nt": int(critical_line_nt),
+                            "phi_target_mode": str(phi_target_mode),
+                            "phi_select_mode": str(phi_select_mode),
+                            "candidate_lambda_norm_mode": str(cm),
+                            "points_total": int(cntC.get("total", 0)),
+                            "failures": int(cntC.get("failures", 0)),
+                            "abs_absQ_minus1_median": float(abs_med),
+                            "abs_absQ_minus1_p95": float(abs_p95),
+                            "abs_absQ_minus1_max": float(abs_max),
+                            "abs_argQ_median": float(arg_med),
+                            "abs_argQ_p95": float(arg_p95),
+                            "abs_argQ_max": float(arg_max),
+                            "unit_phase_err_median": float(unit_med),
+                            "unit_phase_err_p95": float(unit_p95),
+                            "unit_phase_err_max": float(unit_max),
+                            "abs_q_times_ginf_minus1_median": float(qg_med),
+                            "abs_q_times_ginf_minus1_p95": float(qg_p95),
+                            "abs_q_times_ginf_minus1_max": float(qg_max),
+                            "logabs_corr": float(corr),
+                            "logabs_pairs": int(n_pairs),
+                        }
+                    )
+
+                if cand_rows:
+                    pd.DataFrame(cand_rows).to_csv(os.path.join(out_dir, critical_line_candidates_out_csv), index=False)
 
         # Lightweight fit summaries (trend vs 1/N and power law vs N) for phi errors.
         try:
             df_conv = pd.read_csv(os.path.join(out_dir, "E_Qlambda_convergence_sweep.csv"))
         except Exception:
-            return 0
+            df_conv = None
 
         fit_rows: list[dict] = []
-        for (basis, block2), g in df_conv.groupby(["basis", "block"], dropna=False):
-            gg = g.copy()
-            Ns_fit = np.asarray(gg["N"].values, dtype=float)
-            invN = 1.0 / Ns_fit
+        if df_conv is not None:
+            for (basis, block2), g in df_conv.groupby(["basis", "block"], dropna=False):
+                gg = g.copy()
+                Ns_fit = np.asarray(gg["N"].values, dtype=float)
+                invN = 1.0 / Ns_fit
 
-            def _fit_metrics(y: np.ndarray) -> dict:
-                out: dict = {}
-                mask = np.isfinite(y) & np.isfinite(Ns_fit) & (y > 0)
-                if int(np.sum(mask)) < 3:
-                    return {"n_fit": int(np.sum(mask))}
-                y2 = y[mask]
-                N2 = Ns_fit[mask]
-                invN2 = invN[mask]
+                def _fit_metrics(y: np.ndarray) -> dict:
+                    out: dict = {}
+                    mask = np.isfinite(y) & np.isfinite(Ns_fit) & (y > 0)
+                    if int(np.sum(mask)) < 3:
+                        return {"n_fit": int(np.sum(mask))}
+                    y2 = y[mask]
+                    N2 = Ns_fit[mask]
+                    invN2 = invN[mask]
 
-                # Fit y ~ a + b*(1/N)
-                try:
-                    b1, a1 = np.polyfit(invN2, y2, deg=1)
-                except Exception:
-                    a1, b1 = float("nan"), float("nan")
-                out["lin_a"] = float(a1)
-                out["lin_b"] = float(b1)
+                    # Fit y ~ a + b*(1/N)
+                    try:
+                        b1, a1 = np.polyfit(invN2, y2, deg=1)
+                    except Exception:
+                        a1, b1 = float("nan"), float("nan")
+                    out["lin_a"] = float(a1)
+                    out["lin_b"] = float(b1)
 
-                # Fit y ~ C * N^{-alpha} via log-log
-                try:
-                    coeff = np.polyfit(np.log(N2), np.log(y2), deg=1)
-                    alpha = -float(coeff[0])
-                    C = float(np.exp(coeff[1]))
-                except Exception:
-                    alpha, C = float("nan"), float("nan")
-                out["pow_alpha"] = float(alpha)
-                out["pow_C"] = float(C)
-                out["n_fit"] = int(np.sum(mask))
-                return out
+                    # Fit y ~ C * N^{-alpha} via log-log
+                    try:
+                        coeff = np.polyfit(np.log(N2), np.log(y2), deg=1)
+                        alpha = -float(coeff[0])
+                        C = float(np.exp(coeff[1]))
+                    except Exception:
+                        alpha, C = float("nan"), float("nan")
+                    out["pow_alpha"] = float(alpha)
+                    out["pow_C"] = float(C)
+                    out["n_fit"] = int(np.sum(mask))
+                    return out
 
-            for metric in [
-                "err_phi_median",
-                "err_phi_max",
-                "err_phi_norm_median",
-                "err_phi_norm_max",
-                "err_phi_norm_p95",
-                "err_phi_norm_top5_mean",
-            ]:
-                y = np.asarray(gg[metric].values, dtype=float)
-                fr = _fit_metrics(y)
-                fr.update({"basis": str(basis), "block": str(block2), "metric": str(metric)})
-                fit_rows.append(fr)
+                for metric in [
+                    "err_phi_median",
+                    "err_phi_max",
+                    "err_phi_norm_median",
+                    "err_phi_norm_max",
+                    "err_phi_norm_p95",
+                    "err_phi_norm_top5_mean",
+                ]:
+                    y = np.asarray(gg[metric].values, dtype=float)
+                    fr = _fit_metrics(y)
+                    fr.update({"basis": str(basis), "block": str(block2), "metric": str(metric)})
+                    fit_rows.append(fr)
 
-        if fit_rows:
-            pd.DataFrame(fit_rows).to_csv(os.path.join(out_dir, "E_Qlambda_convergence_fit.csv"), index=False)
+        pd.DataFrame(fit_rows).to_csv(os.path.join(out_dir, "E_Qlambda_convergence_fit.csv"), index=False)
 
         # Optional: winding sanity checks for Q_lambda on the rectangle boundary, per N.
         if conv_do_winding:
             wind_rows: list[dict] = []
+            boundary_rows: list[dict] = []
             ptsW = _boundary_points(convergence_rect, int(conv_wind_n_edge))
+            tminW = float(convergence_rect[2])
+            tmaxW = float(convergence_rect[3])
+            sminW = float(convergence_rect[0])
+            smaxW = float(convergence_rect[1])
+
+            def _boundary_side(s: complex) -> str:
+                try:
+                    sig = float(np.real(s))
+                    tt = float(np.imag(s))
+                except Exception:
+                    return "unknown"
+                eps = 1e-12
+                if abs(tt - tminW) <= eps:
+                    return "bottom"
+                if abs(sig - smaxW) <= eps:
+                    return "right"
+                if abs(tt - tmaxW) <= eps:
+                    return "top"
+                if abs(sig - sminW) <= eps:
+                    return "left"
+                return "unknown"
+
             # Avoid caching giant matrices in a sweep.
             model_fnW = getattr(_model_mats, "__wrapped__", _model_mats)
             free_fnW = getattr(_free_mats, "__wrapped__", _free_mats)
             for N in [int(x) for x in Ns]:
                 cfgW = _mk_cfg(int(N))
-                qs: list[complex] = []
-                prev = complex("nan")
-                first = complex("nan")
+                qs_track: list[complex] = []
+                qs_pointwise: list[complex] = []
+                gaps_track: list[float] = []
+                gaps_point: list[float] = []
+                seps2_track: list[float] = []
+                seps2_point: list[float] = []
+                lam_raw_track_samples: list[complex] = []
+                lam_raw_point_samples: list[complex] = []
+                comp_idx_track_samples: list[int] = []
+                comp_idx_point_samples: list[int] = []
+                lam_comp_track_samples: list[complex] = []
+                lam_comp_point_samples: list[complex] = []
+                jumps_track: list[float] = []
+                jumps_point: list[float] = []
+                prev_track = complex("nan")
+                first_track = complex("nan")
+                prev_point = complex("nan")
                 failures = 0
+                phi_abs_min = float("inf")
+                phi_bad = 0
+                gap_min_track = float("inf")
+                gap_min_point = float("inf")
+                jump_max_track = 0.0
+                jump_max_point = 0.0
                 for i, s in enumerate(ptsW):
+                    gap_t = float("nan")
+                    gap_p = float("nan")
+                    sep2_t = float("nan")
+                    sep2_p = float("nan")
+                    jmp_t = float("nan")
+                    jmp_p = float("nan")
+                    lam_raw_track_val = complex("nan")
+                    lam_raw_point_val = complex("nan")
+                    comp_idx_t = -1
+                    comp_idx_p = -1
+                    lam_comp_t = complex("nan")
+                    lam_comp_p = complex("nan")
                     try:
                         _, Lam, Sm = model_fnW(s, cfgW)
                         _, _, S0 = free_fnW(s, cfgW)
@@ -2084,9 +3671,20 @@ def main() -> int:
                         else:
                             M = Srel
 
-                        phi = phi_modular(s)
-                        if (not is_finite_complex(phi)) or abs(phi) <= 1e-30:
+                        phi_norm = phi_target(s, primes=cfgW.primes, completion_mode=cfgW.completion_mode, mode=phi_target_mode)
+                        phi_sel = phi_target(s, primes=cfgW.primes, completion_mode=cfgW.completion_mode, mode=phi_select_mode)
+                        if (
+                            (not is_finite_complex(phi_norm))
+                            or abs(phi_norm) <= 1e-30
+                            or (not is_finite_complex(phi_sel))
+                            or abs(phi_sel) <= 1e-30
+                        ):
                             raise ValueError("bad phi")
+
+                        try:
+                            phi_abs_min = min(phi_abs_min, float(abs(phi_norm)))
+                        except Exception:
+                            pass
 
                         b0 = int(cfgW.b // 2)
                         B = _swap_block_matrix(M, "plus" if conv_block_key == "+" else "minus", b0=b0)
@@ -2094,22 +3692,154 @@ def main() -> int:
                         if eigs.size == 0:
                             raise ValueError("no eigs")
 
-                        if i == 0 or not is_finite_complex(prev):
-                            j_idx, _ = _min_relerr_to_target(eigs, phi)
-                        elif i == (len(ptsW) - 1) and is_finite_complex(first):
-                            j_idx = _nearest_neighbor_index(eigs, first)
+                        # Tracked branch: initialization by selector, then nearest-neighbor continuation,
+                        # with a closure constraint at the final boundary point.
+                        if i == 0 or not is_finite_complex(prev_track):
+                            j_track, _ = _min_relerr_to_target(eigs, phi_sel)
+                        elif i == (len(ptsW) - 1) and is_finite_complex(first_track):
+                            j_track = _nearest_neighbor_index(eigs, first_track)
                         else:
-                            j_idx = _nearest_neighbor_index(eigs, prev)
-                        lam = complex(eigs[int(j_idx)])
+                            j_track = _nearest_neighbor_index(eigs, prev_track)
+                        lam_raw_track = complex(eigs[int(j_track)])
+                        lam_raw_track_val = lam_raw_track
                         if i == 0:
-                            first = lam
-                        prev = lam
-                        qs.append(lam / phi)
-                    except Exception:
-                        qs.append(complex("nan"))
-                        failures += 1
+                            first_track = lam_raw_track
 
-                w, wfail = _winding_count_from_samples(qs)
+                        # Pointwise baseline: always pick best match to selector (no continuation).
+                        j_point, _ = _min_relerr_to_target(eigs, phi_sel)
+                        lam_raw_point = complex(eigs[int(j_point)])
+                        lam_raw_point_val = lam_raw_point
+
+                        # Local spectral gap diagnostics.
+                        try:
+                            if eigs.size >= 2:
+                                diffs_t = np.abs(eigs - lam_raw_track)
+                                diffs_t[int(j_track)] = np.inf
+                                try:
+                                    comp_idx_t = int(np.argmin(diffs_t))
+                                    lam_comp_t = complex(eigs[int(comp_idx_t)])
+                                except Exception:
+                                    comp_idx_t = -1
+                                    lam_comp_t = complex("nan")
+                                diffs_sorted_t = np.sort(diffs_t[np.isfinite(diffs_t)])
+                                if diffs_sorted_t.size >= 1:
+                                    gap_t = float(diffs_sorted_t[0])
+                                if diffs_sorted_t.size >= 2:
+                                    sep2_t = float(diffs_sorted_t[1])
+                                if np.isfinite(gap_t):
+                                    gap_min_track = min(gap_min_track, gap_t)
+                        except Exception:
+                            pass
+                        try:
+                            if eigs.size >= 2:
+                                diffs_p = np.abs(eigs - lam_raw_point)
+                                diffs_p[int(j_point)] = np.inf
+                                try:
+                                    comp_idx_p = int(np.argmin(diffs_p))
+                                    lam_comp_p = complex(eigs[int(comp_idx_p)])
+                                except Exception:
+                                    comp_idx_p = -1
+                                    lam_comp_p = complex("nan")
+                                diffs_sorted_p = np.sort(diffs_p[np.isfinite(diffs_p)])
+                                if diffs_sorted_p.size >= 1:
+                                    gap_p = float(diffs_sorted_p[0])
+                                if diffs_sorted_p.size >= 2:
+                                    sep2_p = float(diffs_sorted_p[1])
+                                if np.isfinite(gap_p):
+                                    gap_min_point = min(gap_min_point, gap_p)
+                        except Exception:
+                            pass
+
+                        # Jump diagnostics.
+                        try:
+                            if is_finite_complex(prev_track):
+                                jmp_t = float(abs(lam_raw_track - prev_track))
+                                jump_max_track = max(jump_max_track, float(jmp_t))
+                            if is_finite_complex(prev_point):
+                                jmp_p = float(abs(lam_raw_point - prev_point))
+                                jump_max_point = max(jump_max_point, float(jmp_p))
+                        except Exception:
+                            pass
+
+                        # Candidate Tier-2 normalization map applied to the scalar observable.
+                        lam_fac = lambda_norm_factor(s, lambda_norm_mode, s_ref=(lambda_norm_sref if lambda_norm_sref is not None else s0))
+                        if (not is_finite_complex(lam_fac)) or abs(lam_fac) <= 1e-300:
+                            raise ValueError("bad lambda normalization factor")
+                        lam_track = complex(lam_raw_track * lam_fac)
+                        lam_point = complex(lam_raw_point * lam_fac)
+
+                        prev_track = lam_raw_track
+                        prev_point = lam_raw_point
+                        qs_track.append(lam_track / phi_norm)
+                        qs_pointwise.append(lam_point / phi_norm)
+                    except Exception:
+                        qs_track.append(complex("nan"))
+                        qs_pointwise.append(complex("nan"))
+                        failures += 1
+                        phi_bad += 1
+
+                    gaps_track.append(float(gap_t) if np.isfinite(gap_t) else float("nan"))
+                    gaps_point.append(float(gap_p) if np.isfinite(gap_p) else float("nan"))
+                    seps2_track.append(float(sep2_t) if np.isfinite(sep2_t) else float("nan"))
+                    seps2_point.append(float(sep2_p) if np.isfinite(sep2_p) else float("nan"))
+                    lam_raw_track_samples.append(lam_raw_track_val)
+                    lam_raw_point_samples.append(lam_raw_point_val)
+                    comp_idx_track_samples.append(int(comp_idx_t))
+                    comp_idx_point_samples.append(int(comp_idx_p))
+                    lam_comp_track_samples.append(lam_comp_t)
+                    lam_comp_point_samples.append(lam_comp_p)
+                    jumps_track.append(float(jmp_t) if np.isfinite(jmp_t) else float("nan"))
+                    jumps_point.append(float(jmp_p) if np.isfinite(jmp_p) else float("nan"))
+
+                if conv_emit_boundary_samples:
+                    for i, s in enumerate(ptsW):
+                        qtr = qs_track[i] if i < len(qs_track) else complex("nan")
+                        qpw = qs_pointwise[i] if i < len(qs_pointwise) else complex("nan")
+                        try:
+                            qabs = float(abs(qtr)) if is_finite_complex(qtr) else float("nan")
+                            logabs = float(np.log(qabs)) if np.isfinite(qabs) and qabs > 0 else float("nan")
+                        except Exception:
+                            qabs, logabs = float("nan"), float("nan")
+                        boundary_rows.append(
+                            {
+                                "source": "convergence_winding",
+                                "N": int(N),
+                                "basis": str(conv_wind_basis),
+                                "block": "plus" if conv_block_key == "+" else "minus",
+                                "sigma": float(np.real(s)) if is_finite_complex(s) else float("nan"),
+                                "t": float(np.imag(s)) if is_finite_complex(s) else float("nan"),
+                                "side": _boundary_side(s),
+                                "idx": int(i),
+                                "n_edge": int(conv_wind_n_edge),
+                                "gap_track": float(gaps_track[i]) if i < len(gaps_track) else float("nan"),
+                                "sep_track": float(gaps_track[i]) if i < len(gaps_track) else float("nan"),
+                                "sep2_track": float(seps2_track[i]) if i < len(seps2_track) else float("nan"),
+                                "gap_pointwise": float(gaps_point[i]) if i < len(gaps_point) else float("nan"),
+                                "sep_pointwise": float(gaps_point[i]) if i < len(gaps_point) else float("nan"),
+                                "sep2_pointwise": float(seps2_point[i]) if i < len(seps2_point) else float("nan"),
+                                "lam_raw_track_re": float(np.real(lam_raw_track_samples[i])) if i < len(lam_raw_track_samples) and is_finite_complex(lam_raw_track_samples[i]) else float("nan"),
+                                "lam_raw_track_im": float(np.imag(lam_raw_track_samples[i])) if i < len(lam_raw_track_samples) and is_finite_complex(lam_raw_track_samples[i]) else float("nan"),
+                                "lam_comp_track_idx": int(comp_idx_track_samples[i]) if i < len(comp_idx_track_samples) else int(-1),
+                                "lam_comp_track_re": float(np.real(lam_comp_track_samples[i])) if i < len(lam_comp_track_samples) and is_finite_complex(lam_comp_track_samples[i]) else float("nan"),
+                                "lam_comp_track_im": float(np.imag(lam_comp_track_samples[i])) if i < len(lam_comp_track_samples) and is_finite_complex(lam_comp_track_samples[i]) else float("nan"),
+                                "lam_raw_point_re": float(np.real(lam_raw_point_samples[i])) if i < len(lam_raw_point_samples) and is_finite_complex(lam_raw_point_samples[i]) else float("nan"),
+                                "lam_raw_point_im": float(np.imag(lam_raw_point_samples[i])) if i < len(lam_raw_point_samples) and is_finite_complex(lam_raw_point_samples[i]) else float("nan"),
+                                "lam_comp_point_idx": int(comp_idx_point_samples[i]) if i < len(comp_idx_point_samples) else int(-1),
+                                "lam_comp_point_re": float(np.real(lam_comp_point_samples[i])) if i < len(lam_comp_point_samples) and is_finite_complex(lam_comp_point_samples[i]) else float("nan"),
+                                "lam_comp_point_im": float(np.imag(lam_comp_point_samples[i])) if i < len(lam_comp_point_samples) and is_finite_complex(lam_comp_point_samples[i]) else float("nan"),
+                                "jump_track": float(jumps_track[i]) if i < len(jumps_track) else float("nan"),
+                                "jump_pointwise": float(jumps_point[i]) if i < len(jumps_point) else float("nan"),
+                                "q_track_re": float(np.real(qtr)) if is_finite_complex(qtr) else float("nan"),
+                                "q_track_im": float(np.imag(qtr)) if is_finite_complex(qtr) else float("nan"),
+                                "q_point_re": float(np.real(qpw)) if is_finite_complex(qpw) else float("nan"),
+                                "q_point_im": float(np.imag(qpw)) if is_finite_complex(qpw) else float("nan"),
+                                "absQ_track": float(qabs),
+                                "logabsQ_track": float(logabs),
+                            }
+                        )
+
+                w_track, wfail_track = _winding_count_from_samples(qs_track)
+                w_point, wfail_point = _winding_count_from_samples(qs_pointwise)
                 wind_rows.append(
                     {
                         "source": "convergence_sweep",
@@ -2121,9 +3851,17 @@ def main() -> int:
                         "t_min": float(convergence_rect[2]),
                         "t_max": float(convergence_rect[3]),
                         "n_edge": int(conv_wind_n_edge),
-                        "winding": float(w),
-                        "winding_abs": float(abs(w)) if np.isfinite(w) else float("nan"),
-                        "failures": int(failures + wfail),
+                        "wind_track": float(w_track),
+                        "wind_track_abs": float(abs(w_track)) if np.isfinite(w_track) else float("nan"),
+                        "wind_pointwise": float(w_point),
+                        "wind_pointwise_abs": float(abs(w_point)) if np.isfinite(w_point) else float("nan"),
+                        "gap_min_track": float(gap_min_track) if np.isfinite(gap_min_track) and gap_min_track < float("inf") else float("nan"),
+                        "gap_min_pointwise": float(gap_min_point) if np.isfinite(gap_min_point) and gap_min_point < float("inf") else float("nan"),
+                        "jump_max_track": float(jump_max_track) if np.isfinite(jump_max_track) else float("nan"),
+                        "jump_max_pointwise": float(jump_max_point) if np.isfinite(jump_max_point) else float("nan"),
+                        "failures": int(failures + wfail_track + wfail_point),
+                        "phi_abs_min": float(phi_abs_min) if np.isfinite(phi_abs_min) else float("nan"),
+                        "phi_bad": int(phi_bad),
                         "eta": float(cfgW.eta),
                         "schur_jitter": float(cfgW.jitter),
                         "cayley_eps": float(cfgW.cayley_eps),
@@ -2132,6 +3870,49 @@ def main() -> int:
 
             if wind_rows:
                 pd.DataFrame(wind_rows).to_csv(os.path.join(out_dir, conv_wind_out), index=False)
+            if conv_emit_boundary_samples and boundary_rows:
+                pd.DataFrame(boundary_rows).to_csv(os.path.join(out_dir, conv_boundary_samples_out), index=False)
+
+        # Ensure convergence-only runs still satisfy the run contract and remain auditable.
+        try:
+            lines: list[str] = []
+            lines.append("# Experiment E: Q_lambda convergence sweep\n")
+            lines.append("This run was executed with `do_convergence_sweep_only: true`.\n")
+            lines.append("## Parameters\n")
+            lines.append(f"- Ns: {list(map(int, Ns))}")
+            lines.append(f"- rectangle: {tuple(map(float, convergence_rect))}")
+            lines.append(f"- n_sigma, n_t: {int(convergence_n_sigma)}, {int(convergence_n_t)}")
+            lines.append(f"- eta: {float(eta)}  |  schur_jitter: {float(jitter)}  |  cayley_eps: {float(cayley_eps)}")
+            lines.append(f"- boundary_frac: {float(boundary_frac)}  |  boundary_b0_delta: {int(boundary_b0_delta)}")
+            lines.append(f"- phi_target_mode: {str(phi_target_mode)}")
+            lines.append(f"- phi_select_mode: {str(phi_select_mode)}\n")
+            lines.append(f"- lambda_norm_mode: {str(lambda_norm_mode)}\n")
+            if bool(do_critical_line_fingerprint):
+                lines.append("- do_critical_line_fingerprint: true")
+                lines.append(f"- critical_line_sigma: {float(critical_line_sigma)}")
+                lines.append(f"- critical_line_t_min, critical_line_t_max: {float(critical_line_t_min)}, {float(critical_line_t_max)}")
+                lines.append(f"- critical_line_nt: {int(critical_line_nt)}")
+                lines.append(f"- critical_line_basis: {str(critical_line_basis)}  |  critical_line_block: {str(critical_line_block)}\n")
+                if bool(critical_line_eval_candidates):
+                    lines.append(f"- critical_line_eval_candidates: true  |  candidates: {critical_line_candidates}\n")
+            lines.append("## Artifacts\n")
+            lines.append("- `E_Qlambda_convergence_sweep.csv` — interior-grid agreement and gap diagnostics (per basis/block)")
+            lines.append("- `E_Qlambda_convergence_fit.csv` — simple trend fits of key error metrics vs N")
+            if conv_do_magphase_diag:
+                lines.append("- `E_Qlambda_convergence_magphase.csv` — magnitude/phase diagnostics (Q vs |g_infty| tracking)")
+            if conv_do_winding:
+                lines.append(f"- `{str(conv_wind_out)}` — boundary winding sanity check per N")
+            if bool(do_critical_line_fingerprint):
+                lines.append(f"- `{str(critical_line_points_out_csv)}` — dense critical-line fingerprint points (per t)")
+                lines.append(f"- `{str(critical_line_summary_out_csv)}` — critical-line fingerprint summary (per N)")
+                if bool(critical_line_eval_candidates):
+                    lines.append(f"- `{str(critical_line_candidates_out_csv)}` — critical-line candidate table (per N, per candidate)")
+            Path(os.path.join(out_dir, "E_summary.md")).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
+        if bool(config.get("run_contract_enforce", True)):
+            _validate_run_contract(out_dir, config)
 
         return 0
 
@@ -2190,7 +3971,11 @@ def main() -> int:
                 except Exception:
                     continue
 
-                phi = phi_modular(s) if pole_line_include_phi else complex("nan")
+                phi = (
+                    phi_target(s, primes=cfgN.primes, completion_mode=cfgN.completion_mode, mode=phi_target_mode)
+                    if pole_line_include_phi
+                    else complex("nan")
+                )
                 abs_phi = float(abs(phi)) if is_finite_complex(phi) else float("nan")
 
                 # Cayley denominator sentinels (model)
@@ -2347,7 +4132,7 @@ def main() -> int:
 
                 smin_Tin, _, cond_Tin, _, _ = _svd_sentinels(Tin_eta)
 
-                phi = phi_modular(s)
+                phi = phi_target(s, primes=cfgN.primes, completion_mode=cfgN.completion_mode, mode=phi_target_mode)
                 abs_phi = float(abs(phi)) if is_finite_complex(phi) else float("nan")
                 if (not is_finite_complex(phi)) or abs(phi) <= 1e-30:
                     return float(smin_Tin), float(cond_Tin), float("nan"), float("nan"), float(abs_phi), float("nan")
@@ -3064,11 +4849,11 @@ def main() -> int:
                     if ridx is None:
                         continue
                     s = complex(float(sigma), float(t))
-                    phi = phi_modular(s)
+                    phi = phi_target(s, primes=cfgN.primes, completion_mode=cfgN.completion_mode, mode=phi_target_mode)
                     phi_e = phi_euler_only(s)
                     targets = {
-                        "phi_mod": phi,
-                        "inv_phi_mod": safe_div(1.0 + 0.0j, phi),
+                        "phi_mod": phi_modular(s),
+                        "inv_phi_mod": safe_div(1.0 + 0.0j, phi_modular(s)),
                         "phi_euler": phi_e,
                         "inv_phi_euler": safe_div(1.0 + 0.0j, phi_e),
                     }
@@ -3170,11 +4955,11 @@ def main() -> int:
                     if ridx is None:
                         continue
                     s = complex(float(sigma), float(t))
-                    phi = phi_modular(s)
+                    phi = phi_target(s, primes=cfgN.primes, completion_mode=cfgN.completion_mode, mode=phi_target_mode)
                     phi_e = phi_euler_only(s)
                     targets = {
-                        "phi_mod": phi,
-                        "inv_phi_mod": safe_div(1.0 + 0.0j, phi),
+                        "phi_mod": phi_modular(s),
+                        "inv_phi_mod": safe_div(1.0 + 0.0j, phi_modular(s)),
                         "phi_euler": phi_e,
                         "inv_phi_euler": safe_div(1.0 + 0.0j, phi_e),
                     }
@@ -3348,7 +5133,7 @@ def main() -> int:
         def Q(s: complex) -> complex:
             Sm = _model_detS_norm(s, cfgN)
             Sm = Cn * Sm
-            ph = phi_modular(s)
+            ph = phi_target(s, primes=cfgN.primes, completion_mode=cfgN.completion_mode, mode=phi_target_mode)
             return Sm / ph if ph != 0 else complex("nan")
 
         integral = 0.0 + 0.0j
@@ -3462,7 +5247,7 @@ def main() -> int:
                             failures_total[k] += 1
                         continue
 
-                    phi = phi_modular(s)
+                    phi = phi_target(s, primes=cfgN.primes, completion_mode=cfgN.completion_mode, mode=phi_target_mode)
                     if (not is_finite_complex(phi)) or abs(phi) <= 1e-30:
                         for k in states.keys():
                             states[k]["qs"].append(complex("nan"))
@@ -3692,7 +5477,7 @@ def main() -> int:
                         except Exception:
                             continue
 
-                        phi = phi_modular(s)
+                        phi = phi_target(s, primes=cfgN.primes, completion_mode=cfgN.completion_mode, mode=phi_target_mode)
                         if (not is_finite_complex(phi)) or abs(phi) <= 1e-30:
                             continue
 
@@ -3772,7 +5557,7 @@ def main() -> int:
 
             def c_emp(s: complex) -> complex:
                 Sm = _model_detS_norm(s, cfgN)
-                ph = phi_modular(s)
+                ph = phi_target(s, primes=cfgN.primes, completion_mode=cfgN.completion_mode, mode=phi_target_mode)
                 return Sm / ph if ph != 0 else complex("nan")
 
             integral = 0.0 + 0.0j

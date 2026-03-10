@@ -28,6 +28,19 @@ Show that the normalized completion $\Xi_T$ is the correct “completed object�
 - exact involution symmetry (functional-equation analogue),
 - zeros correspond to the spectrum of a self-adjoint operator.
 
+This splits into two explicit proof obligations already tracked elsewhere:
+
+- **Finite→limit control (convergence obligations):** safe-rectangle operator consistency and divisor control on rectangles, upgraded from finite $N$.
+	- Safe-rectangle lemma: [notes/lemma_safe_rectangle_convergence.md](notes/lemma_safe_rectangle_convergence.md)
+	- What convergence *does* and *does not* prove: [notes/closure_from_convergence.md](notes/closure_from_convergence.md)
+	- H2 proof blueprint for the current finite sections: [notes/h2_completion_blueprint.md](notes/h2_completion_blueprint.md)
+	- Geometric H2 plan + spec (RH target): [notes/h2_geometric_growing_boundary_plan.md](notes/h2_geometric_growing_boundary_plan.md) and [notes/geometric_discretization_spec_option_B.md](notes/geometric_discretization_spec_option_B.md)
+
+- **Model-side analytic structure (non-convergence obligations):** existence/meromorphy + involution/FE + strip growth for the limiting scattering object, and identification of the extracted channel with the modular scattering coefficient.
+	- Task A (scattering operator presentation): [notes/operator_construction_and_meromorphy.md](notes/operator_construction_and_meromorphy.md)
+	- Task B (Eisenstein/scattering identification): [notes/eisenstein_intertwiner_identification.md](notes/eisenstein_intertwiner_identification.md)
+	- Hinge closure: [notes/proposition_identification_hinge.md](notes/proposition_identification_hinge.md)
+
 ## Theorem (RH corollary)
 
 If Lemma A, Lemma B, and Lemma C hold for the construction, then the nontrivial zeros lie on the critical line $\Re(s)=1/2$ (RH).

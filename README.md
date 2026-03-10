@@ -12,8 +12,11 @@ This repository contains the RH/Experiment-E proof package notes, the frozen run
 ## Proof chain (notes)
 
 - Convergence + safe-rectangle hypotheses (finite \(N\) \(\to\) limiting channel): [notes/lemma_safe_rectangle_convergence.md](notes/lemma_safe_rectangle_convergence.md)
+- Modular divisor-free rectangle boundaries (H4 discharge): [notes/lemma_modular_divisor_free_boundary.md](notes/lemma_modular_divisor_free_boundary.md)
 - Selector admissibility (channel isolation / no swapping): [notes/lemma_selector_admissibility.md](notes/lemma_selector_admissibility.md)
 - Task A (operator backbone: DN/Weyl \(\Lambda(s)\), Cayley/scattering \(S_\eta(s)\), meromorphy/involution): [notes/operator_construction_and_meromorphy.md](notes/operator_construction_and_meromorphy.md)
+- Truncation \(\to\) DN/Weyl convergence mechanism (H2): [notes/lemma_truncation_to_dnmap_convergence.md](notes/lemma_truncation_to_dnmap_convergence.md)
+- H2 specialized to the concrete Experiment E objects: [notes/h2_operator_consistency_instantiated.md](notes/h2_operator_consistency_instantiated.md)
 - Task B (mapping theorem + canonical cusp-channel extraction; modular \(\phi_{mod}(s)\)): [notes/eisenstein_intertwiner_identification.md](notes/eisenstein_intertwiner_identification.md)
 - Rigidity hinge for \(Q(s)=\lambda(s)/\phi_{mod}(s)\): [notes/proposition_identification_hinge.md](notes/proposition_identification_hinge.md)
 - One-page audit table (hypotheses \(\leftrightarrow\) artifacts): [notes/hypotheses_to_artifacts.md](notes/hypotheses_to_artifacts.md)

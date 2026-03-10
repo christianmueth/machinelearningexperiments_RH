@@ -23,13 +23,13 @@ It is intentionally link-forward: each obligation points to the note where it is
 Primary note: [notes/operator_construction_and_meromorphy.md](notes/operator_construction_and_meromorphy.md)
 
 - **A1. Specify the limiting geometric operator model precisely** (surface/cusp cut, domains, and spectral parameter convention).
-  - Status: **Analytic theorem (needed)** (write-up must be made fully explicit).
+  - Status: **Write-up now explicit** (still needs final citation lock-in).
 - **A2. Define the limiting DN/Weyl family \(\Lambda(s)\)** on a fixed boundary Hilbert space and prove meromorphic continuation.
-  - Status: **Analytic theorem (needed)** (referenced as standard black box today).
+  - Status: **Write-up now explicit** (meromorphy is a cited standard theorem; final citation choice still required).
 - **A3. Prove the operator functional equation / adjoint symmetry** \(\Lambda(1-s)=D_b\Lambda(s)^*D_b^{-1}\) and the induced involution for \(S_\eta(s)\).
-  - Status: **Analytic theorem (needed)** (required by the hinge proposition).
+  - Status: **Citable in chosen presentation** (proved at the geometric scattering level; transfers to the scalar channel once Task B identifies the channel normalization).
 - **A4. Prove a growth bound sufficient for a Phragmén–Lindelöf step** (or an equivalent rigidity route).
-  - Status: **Analytic theorem (needed)**.
+  - Status: **Citable in chosen presentation** (finite-order/strip growth via scattering determinant / Selberg zeta; transfers to the scalar channel once Task B identifies the channel normalization).
 
 ---
 
@@ -49,11 +49,18 @@ Its hypotheses split as follows (see audit mapping): [notes/hypotheses_to_artifa
 - **H3 (spectral gap isolating the target channel; no swapping)**
   - Status: **Numeric witness (per run)** via run artifacts.
 - **H4 (no modular divisor on \(\partial R\))**
-  - Status: **Analytic theorem (needed)** (it is number-theoretic, but standard once rectangles are chosen away from zeta zeros/poles).
+  - Status: **Formally complete (simple complex analysis)** once rectangle boundaries are chosen to avoid the discrete divisor set.
+  - Note: [notes/lemma_modular_divisor_free_boundary.md](notes/lemma_modular_divisor_free_boundary.md)
 - **Additional “divisor-clean boundary for \(Q_N\)” / winding=0 on \(\partial R\)** (the operational version of divisor control)
   - Status: **Numeric witness (per run)** via winding/argument-principle artifacts.
 - **H2 (operator consistency: \(\Lambda_N\to\Lambda\) uniformly on \(R\))**
   - Status: **Analytic theorem (needed)**.
+  - Mechanism note: [notes/lemma_truncation_to_dnmap_convergence.md](notes/lemma_truncation_to_dnmap_convergence.md)
+  - Instantiated statement (matching Experiment E objects): [notes/h2_operator_consistency_instantiated.md](notes/h2_operator_consistency_instantiated.md)
+  - Completion blueprint (what remains to actually prove for `build_A`/finite sections): [notes/h2_completion_blueprint.md](notes/h2_completion_blueprint.md)
+  - Clarification: fully discharging H2 means proving the rectangle-uniform DN/Weyl convergence theorem (finite→limit). It is a key bridge, but RH still also requires Task A/B (limiting meromorphy/FE/growth + channel identification).
+  - Geometric Option-B spec (treat current Hecke construction as a Galerkin scheme): [notes/geometric_discretization_spec_option_B.md](notes/geometric_discretization_spec_option_B.md)
+  - **Core missing bridge theorem (packages B1–B4 as one statement):** [notes/bridge_theorem_option_B_minimal.md](notes/bridge_theorem_option_B_minimal.md)
 
 Run protocol freezing (what is logged, when, and with which field names): [RUN_CONTRACT.md](RUN_CONTRACT.md)
 
@@ -105,6 +112,19 @@ To apply the hinge proposition to \(Q(s)=\lambda(s)/\phi_{mod}(s)\), you need:
 ---
 
 ## 5) What this implies about “code completeness”
+
+### A recurring point of confusion: “we already did analytic continuation numerically”
+
+The harness *does* evaluate complex-parameter objects off the real axis (and runs branch tracking, winding/argument diagnostics, etc.). That is best understood as **numerical exploration of finite-\(N\) surrogates** and **witnessing** that certain hypotheses look stable on chosen safe rectangles.
+
+However, the missing proof steps are not just “more samples.” They are theorem-grade upgrades of the form:
+
+- (**Existence + meromorphy for the limiting object**) define the limiting DN/Weyl family \(\Lambda(s)\) on a fixed Hilbert boundary space and prove its meromorphic continuation + adjoint/functional-equation symmetry (Task A).
+- (**Uniform finite-to-limit control**) prove \(\Lambda_N\to\Lambda\) on safe rectangles in a norm strong enough to pass through the Cayley transform and the channel extraction (H2 / Task A).
+- (**Semantic identification**) prove the extracted scalar channel is the classical modular cusp scattering coefficient \(\phi(s)=\xi(2s-1)/\xi(2s)\) (Task B).
+- (**Growth/finite-order bounds**) supply whatever strip-growth control is used by the hinge proposition (Task A/B).
+
+Numerics can still be extremely valuable for falsification and for mapping admissible regions (where margins/gaps/winding behave), but they do not by themselves certify these global/uniform analytic statements.
 
 - The harness is already structured as a **witness generator** with a frozen artifact contract: [RUN_CONTRACT.md](RUN_CONTRACT.md)
 - The proof delta is dominated by **analytic identification** (Tasks A/B) and **hypothesis discharge**, not by new algorithms.

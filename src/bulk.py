@@ -144,9 +144,11 @@ def build_A(
             else:
                 raise ValueError(f"unknown comps_mode: {comps_mode}")
 
-        C_s = np.zeros((N, N), dtype=np.complex128)
-        C_1ms = np.zeros((N, N), dtype=np.complex128)
+        C_s = None
+        C_1ms = None
         if comps_list:
+            C_s = np.zeros((N, N), dtype=np.complex128)
+            C_1ms = np.zeros((N, N), dtype=np.complex128)
             for n in comps_list:
                 Tn = _sym(hecke_Tn(int(n), hecke_params))
                 Tn = _normalize_operator(Tn, method=generator_norm, target=generator_norm_target)
@@ -161,16 +163,104 @@ def build_A(
             if current > 0.0:
                 comp_scale_c = comp_scale_c * (target / current)
 
-        U = prime_scale_c * K_s + comp_scale_c * C_s
-        V = prime_scale_c * K_1ms + comp_scale_c * C_1ms
+        U = (prime_scale_c * K_s).astype(np.complex128)
+        V = (prime_scale_c * K_1ms).astype(np.complex128)
+        if comps_list and C_s is not None and C_1ms is not None:
+            U = (U + comp_scale_c * C_s).astype(np.complex128)
+            V = (V + comp_scale_c * C_1ms).astype(np.complex128)
         I = np.eye(N, dtype=np.complex128)
-        Z = np.zeros((N, N), dtype=np.complex128)
         top = np.concatenate([I, U], axis=1)
         bot = np.concatenate([dual_scale_c * V, I], axis=1)
         A2 = np.concatenate([top, bot], axis=0)
         if return_components:
             return (np.asarray(A2, dtype=np.complex128), U, dual_scale_c * V)  # type: ignore[return-value]
         return np.asarray(A2, dtype=np.complex128)
+
+
+def build_two_channel_UW(
+    *,
+    s: complex,
+    primes: list[int],
+    comps: list[int] | None,
+    params: BulkParams,
+    prime_scale: float = 1.0,
+    comp_scale: float = 1.0,
+    comps_mode: str = "all",
+    generator_norm: str | None = None,
+    generator_norm_target: float = 1.0,
+    match_comp_to_prime: bool = False,
+    completion_mode: str = "none",
+    dual_scale: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build two-channel off-diagonal blocks (U, W) without assembling A2.
+
+    For bulk_mode='two_channel_symmetric', build_A constructs
+      A2 = [[I, U], [W, I]]
+    where W = dual_scale * V and V is the (1-s) block.
+
+    This helper returns (U, W) directly, avoiding the 2N×2N allocation.
+    """
+
+    N = int(params.N)
+    hecke_params = HeckeParams(N=N, weight_k=int(params.weight_k))
+
+    completion_mode = str(completion_mode).lower().strip()
+    if completion_mode not in {"none", "dual_1_minus_s", "dual_1_minus_s_j"}:
+        raise ValueError("completion_mode must be 'none', 'dual_1_minus_s', or 'dual_1_minus_s_J'")
+
+    def _sym(T: np.ndarray) -> np.ndarray:
+        T = np.asarray(T, dtype=np.complex128)
+        return 0.5 * (T + T.T)
+
+    K_s = np.zeros((N, N), dtype=np.complex128)
+    K_1ms = np.zeros((N, N), dtype=np.complex128)
+    for p in primes:
+        Tp = _sym(hecke_Tn(int(p), hecke_params))
+        Tp = _normalize_operator(Tp, method=generator_norm, target=generator_norm_target)
+        K_s = K_s + eps_prime(int(p), s) * Tp
+        K_1ms = K_1ms + eps_prime(int(p), (1.0 - s)) * Tp
+
+    comps_list: list[int] = []
+    if comps:
+        comps_list = [int(x) for x in comps]
+
+    comps_mode = str(comps_mode).lower().strip()
+    if comps_list and comps_mode != "all":
+        if comps_mode in {"prime_powers", "primepower", "pp"}:
+            comps_list = [n for n in comps_list if _is_prime_power(n)]
+        elif comps_mode in {"non_prime_powers", "non_primepower", "non_pp"}:
+            comps_list = [n for n in comps_list if (n > 1 and (not _is_prime_power(n)))]
+        else:
+            raise ValueError(f"unknown comps_mode: {comps_mode}")
+
+    C_s = None
+    C_1ms = None
+    if comps_list:
+        C_s = np.zeros((N, N), dtype=np.complex128)
+        C_1ms = np.zeros((N, N), dtype=np.complex128)
+        for n0 in comps_list:
+            Tn = _sym(hecke_Tn(int(n0), hecke_params))
+            Tn = _normalize_operator(Tn, method=generator_norm, target=generator_norm_target)
+            C_s = C_s + eps_n(int(n0), s) * Tn
+            C_1ms = C_1ms + eps_n(int(n0), (1.0 - s)) * Tn
+
+    prime_scale_c = complex(prime_scale)
+    comp_scale_c = complex(comp_scale)
+    if match_comp_to_prime and comps_list and C_s is not None:
+        target = abs(prime_scale_c) * fro_norm(K_s)
+        current = abs(comp_scale_c) * fro_norm(C_s)
+        if current > 0.0:
+            comp_scale_c = comp_scale_c * (target / current)
+
+    U = (prime_scale_c * K_s).astype(np.complex128)
+    V = (prime_scale_c * K_1ms).astype(np.complex128)
+    if comps_list and C_s is not None and C_1ms is not None:
+        U = (U + comp_scale_c * C_s).astype(np.complex128)
+        V = (V + comp_scale_c * C_1ms).astype(np.complex128)
+
+    dual_scale_c = complex(float(dual_scale))
+    W = (dual_scale_c * V).astype(np.complex128)
+    return U, W
 
     # Default: existing one-channel assembly
     M_prime = np.zeros((N, N), dtype=np.complex128)

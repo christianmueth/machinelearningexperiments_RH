@@ -26,7 +26,9 @@ Required:
 If `convergence_do_winding: true`, also required:
 
 - `E_Qlambda_convergence_winding.csv` (or `convergence_wind_out_csv` if overridden)
-  - Must include columns: `source`, `N`, `basis`, `block`, `n_edge`, `winding`, `failures`, `eta`.
+  - Must include columns: `source`, `N`, `basis`, `block`, `n_edge`, `wind_track`, `wind_pointwise`, `failures`, `eta`.
+  - **Policy:** Any divisor-clean / argument-principle claim must reference the **tracked** channel (`wind_track*`).
+    `wind_pointwise*` is permitted only as a selector-stability diagnostic.
 
 ## 3) Boundary autopick contract (`boundary_autopick: true`)
 

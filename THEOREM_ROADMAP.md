@@ -136,6 +136,29 @@ Define a prime-indexed family $\{T_p\}$ where geometry enters only through $(u(p
 **H1 (Closure constraints).**
 Define coprime closure (pq), triangle/two-path closure (pqr), and prime-power closure (tower/pow). In the proof-aligned target, these should become exact identities (or converge to them under an admissible limit).
 
+**H2 (2×2 local recursion (Cayley–Hamilton / Chebyshev)).**
+A common way to package “prime-power” structure is via a $2\times 2$ transfer block $A$ whose **trace is fixed by normalization** while the **determinant carries the local geometry/parameter**. For any $2\times 2$ matrix $A$ one has the Cayley–Hamilton identity
+
+$$
+A^2-(\mathrm{tr}A)A+(\det A)I=0,
+$$
+
+which implies the recursion
+
+$$
+A^{n+1}=(\mathrm{tr}A)A^n-(\det A)A^{n-1} \qquad (n\ge 1).
+$$
+
+Equivalently, the scalar sequence $u_n=\mathrm{tr}(A^n)$ satisfies
+
+$$
+u_{n+1}=(\mathrm{tr}A)u_n-(\det A)u_{n-1},\quad u_0=2,\ u_1=\mathrm{tr}A,
+$$
+
+so when $\mathrm{tr}A=2$ this is a Chebyshev-type recursion with $\det A$ as the coefficient that “bends” the eigenvalues/eigenphases.
+
+Interpretation: the dependence on $\det A$ is a **spectral curvature / conditioning diagnostic** (how the local block deviates from the flat/unitary-normalized case), and it should not be conflated with a refinement-depth contraction constant $\kappa<1$ (which would be a metric statement about the map $N\mapsto N'$).
+
 ## T. Theorems to target (roadmap)
 
 **Theorem A (Admissible class / gauge fixing).**

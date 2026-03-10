@@ -81,6 +81,10 @@ Everything below is *not* proven by the harness; it is the remaining math.
   - its meromorphic continuation (as appropriate for the geometric/scattering setting),
   - and the operator consistency statement H2 used in the safe-rectangle lemma.
 
+For the abstract “bulk truncation convergence \(\Rightarrow\) DN/Weyl convergence” step behind H2, see: `notes/lemma_truncation_to_dnmap_convergence.md`.
+
+For the exact H2 statement specialized to the harness’s concrete definitions, see: `notes/h2_operator_consistency_instantiated.md`.
+
 ### Task B: Identify the extracted scalar channel with the classical intertwiner
 
 - `notes/eisenstein_intertwiner_identification.md` is the representation-theoretic mapping.
