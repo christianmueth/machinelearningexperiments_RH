@@ -12,6 +12,7 @@ __pycache__/
 # Local experiment outputs / run artifacts
 out_*/
 runs/
+runs_*/
 
 # Common large/binary artifacts (keep repo lean)
 *.csv
