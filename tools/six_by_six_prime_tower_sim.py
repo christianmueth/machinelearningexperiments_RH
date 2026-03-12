@@ -172,6 +172,7 @@ def _local_blocks_for_prime_power(
     x_gamma: float,
     x_shear: float,
     x_lower: float,
+    p_mode: str = "p",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return (X, A, A_sharp) for the prime-power p^k block."""
 
@@ -196,14 +197,36 @@ def _local_blocks_for_prime_power(
     if not math.isfinite(x_lower):
         raise ValueError("x_lower must be finite")
 
+    # Allow alternative prime parameterizations to test which length law the geometry prefers.
+    # This changes ONLY how p enters the diagonal factor D; the rest of the construction is unchanged.
+    p_mode = str(p_mode).strip().lower()
+    p_f = float(p)
+    if p_mode in {"p", "prime"}:
+        p_eff = p_f
+    elif p_mode in {"logp", "log(p)", "lnp"}:
+        p_eff = float(math.log(p_f))
+    elif p_mode in {"p1_over_p", "(p+1)/p", "one_plus_invp", "1+1/p"}:
+        p_eff = (p_f + 1.0) / p_f
+    elif p_mode in {"p_over_p1", "p/(p+1)"}:
+        p_eff = p_f / (p_f + 1.0)
+    elif p_mode in {"invp", "1/p"}:
+        p_eff = 1.0 / p_f
+    elif p_mode in {"p_minus1_over_p", "(p-1)/p", "1-1/p"}:
+        p_eff = (p_f - 1.0) / p_f
+    else:
+        raise ValueError("p_mode must be one of: p, logp, p1_over_p, p_over_p1, invp, p_minus1_over_p")
+
+    if not (p_eff > 0.0) or not math.isfinite(p_eff):
+        raise ValueError(f"invalid effective prime parameter p_eff={p_eff} from p_mode={p_mode}")
+
     if x_mode == "raw":
-        x11 = float(p) ** (float(x_gamma) * float(k))
+        x11 = float(p_eff) ** (float(x_gamma) * float(k))
         x22 = 1.0
     else:
         # Determinant-1 normalization: diag(p^{k/2}, p^{-k/2}).
         # Many SL(2)/symplectic constructions implicitly assume det(X)=1.
-        x11 = float(p) ** (0.5 * float(x_gamma) * float(k))
-        x22 = float(p) ** (-0.5 * float(x_gamma) * float(k))
+        x11 = float(p_eff) ** (0.5 * float(x_gamma) * float(k))
+        x22 = float(p_eff) ** (-0.5 * float(x_gamma) * float(k))
 
     # Full SL(2)-style det-preserving deformation around the diagonal factor:
     #   X = U(u) * D * L(v)
@@ -321,6 +344,7 @@ def _boundary_search(
     x_gamma: float,
     x_shear: float,
     x_lower: float,
+    p_mode: str = "p",
     scattering_mode: str,
 ) -> tuple[tuple[int, int], str, float, float]:
     """Search boundary index pair + Schur sign that best enforces Hermiticity/unitarity.
@@ -340,6 +364,7 @@ def _boundary_search(
                 x_gamma=float(x_gamma),
                 x_shear=float(x_shear),
                 x_lower=float(x_lower),
+                p_mode=str(p_mode),
             )
             Bs.append(_bulk_B_from_A(A, Ash))
 
@@ -385,6 +410,7 @@ def _build_packets(
     k_max: int,
     *,
     local_model: str,
+    prime_power_mode: str = "direct",
     boundary: tuple[int, int],
     sign: str,
     sharp_mode: str,
@@ -392,6 +418,7 @@ def _build_packets(
     x_gamma: float,
     x_shear: float,
     x_lower: float,
+    p_mode: str = "p",
     scattering_mode: str,
     satake_family: str,
     satake_matrix: str,
@@ -404,18 +431,45 @@ def _build_packets(
     if local_model not in {"sixby6", "satake"}:
         raise ValueError("local_model must be 'sixby6' or 'satake'")
 
+    prime_power_mode = str(prime_power_mode).strip().lower()
+    if prime_power_mode not in {"direct", "x_power"}:
+        raise ValueError("prime_power_mode must be one of: direct, x_power")
+    if local_model != "sixby6" and prime_power_mode != "direct":
+        raise ValueError("prime_power_mode is only supported for local_model='sixby6'")
+
     for p in primes:
+        if local_model == "sixby6" and prime_power_mode == "x_power":
+            # Semigroup-enforced prime-power tower: generate higher k blocks by powering
+            # a single upstream generator X_{p,1}.
+            X1, _, _ = _local_blocks_for_prime_power(
+                int(p),
+                1,
+                sharp_mode=str(sharp_mode),
+                x_mode=str(x_mode),
+                x_gamma=float(x_gamma),
+                x_shear=float(x_shear),
+                x_lower=float(x_lower),
+                p_mode=str(p_mode),
+            )
+
         for k in range(1, int(k_max) + 1):
             if local_model == "sixby6":
-                _, A, Ash = _local_blocks_for_prime_power(
-                    int(p),
-                    int(k),
-                    sharp_mode=str(sharp_mode),
-                    x_mode=str(x_mode),
-                    x_gamma=float(x_gamma),
-                    x_shear=float(x_shear),
-                    x_lower=float(x_lower),
-                )
+                if prime_power_mode == "direct":
+                    _, A, Ash = _local_blocks_for_prime_power(
+                        int(p),
+                        int(k),
+                        sharp_mode=str(sharp_mode),
+                        x_mode=str(x_mode),
+                        x_gamma=float(x_gamma),
+                        x_shear=float(x_shear),
+                        x_lower=float(x_lower),
+                        p_mode=str(p_mode),
+                    )
+                else:
+                    Xk = np.linalg.matrix_power(np.asarray(X1, dtype=np.complex128), int(k))
+                    A = _cayley(Xk)
+                    Ash = _symplectic_partner(A, mode=str(sharp_mode))
+
                 B = _bulk_B_from_A(A, Ash)
                 Lam = _schur_complement_Lambda(B, boundary=boundary, sign=str(sign))
                 S = _scattering_from_Lambda(Lam, mode=str(scattering_mode))
@@ -564,6 +618,17 @@ def main() -> int:
     )
 
     ap.add_argument(
+        "--p_mode",
+        choices=["p", "logp", "p1_over_p", "p_over_p1", "invp", "p_minus1_over_p"],
+        default="p",
+        help=(
+            "How to inject p into the local diagonal factor D. "
+            "This changes ONLY the effective prime parameter used in the local block, and is useful for testing which "
+            "prime-length clock (e.g. log p vs log(1+1/p)) the geometry prefers."
+        ),
+    )
+
+    ap.add_argument(
         "--X_shear",
         type=float,
         default=0.0,
@@ -618,6 +683,7 @@ def main() -> int:
                 x_gamma=float(args.X_gamma),
                 x_shear=float(args.X_shear),
                 x_lower=float(args.X_lower),
+                p_mode=str(args.p_mode),
                 scattering_mode=str(args.scattering),
             )
             boundary = pair
@@ -654,6 +720,7 @@ def main() -> int:
         x_gamma=float(args.X_gamma),
         x_shear=float(args.X_shear),
         x_lower=float(args.X_lower),
+        p_mode=str(args.p_mode),
         scattering_mode=str(args.scattering),
         satake_family=str(args.satake_family),
         satake_matrix=str(args.satake_matrix),

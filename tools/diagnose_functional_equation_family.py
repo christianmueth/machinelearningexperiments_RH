@@ -454,6 +454,15 @@ def main() -> int:
     ap.add_argument("--sharp", choices=["transpose", "conj_transpose"], default="conj_transpose")
     ap.add_argument("--X_mode", choices=["raw", "det1"], default="det1")
     ap.add_argument("--X_gamma", type=float, default=1.0)
+    ap.add_argument(
+        "--p_mode",
+        choices=["p", "logp", "p1_over_p", "p_over_p1", "invp", "p_minus1_over_p"],
+        default="p",
+        help=(
+            "How to inject p into the local diagonal factor D. "
+            "This is a targeted test for which prime-length clock the geometry prefers."
+        ),
+    )
     ap.add_argument("--scattering", choices=["lambda_pm_i", "i_pm_lambda"], default="i_pm_lambda")
 
     args = ap.parse_args()
@@ -484,6 +493,7 @@ def main() -> int:
             x_gamma=float(args.X_gamma),
             x_shear=float(u),
             x_lower=float(v),
+            p_mode=str(args.p_mode),
             scattering_mode=str(args.scattering),
         )
 
@@ -498,6 +508,7 @@ def main() -> int:
             x_gamma=float(args.X_gamma),
             x_shear=float(u),
             x_lower=float(v),
+            p_mode=str(args.p_mode),
             scattering_mode=str(args.scattering),
             satake_family="trivial",
             satake_matrix="diag",
