@@ -483,12 +483,13 @@ def main() -> int:
     )
     ap.add_argument(
         "--prime_power_mode",
-        choices=["direct", "x_power"],
+        choices=["direct", "x_power", "bulk_power"],
         default="direct",
         help=(
             "How to generate prime-power packets k>1 for the sixby6 local model. "
             "direct builds each (p,k) independently. "
-            "x_power enforces a semigroup: build X_{p,1} then set X_{p,k}=X_{p,1}^k before reduction."
+            "x_power enforces a semigroup at the 2x2 X level: build X_{p,1} then set X_{p,k}=X_{p,1}^k before reduction. "
+            "bulk_power enforces a semigroup on the 6x6 bulk generator: build B_{p,1} then set B_{p,k}=B_{p,1}^k before Schur/Cayley reduction."
         ),
     )
     ap.add_argument("--scattering", choices=["lambda_pm_i", "i_pm_lambda"], default="i_pm_lambda")

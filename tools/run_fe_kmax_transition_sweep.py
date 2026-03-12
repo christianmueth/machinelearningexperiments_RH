@@ -34,11 +34,18 @@ SCRIPT = ROOT / "tools" / "fe_defect_perturbation_u0.py"
 DEFAULT_PRIMES = "2,3,5,7,11,13,17,19,23,29,31,37"
 DEFAULT_PMODES = ["p", "invp", "p1_over_p", "logp"]
 DEFAULT_COMPLETIONS = ["zeta", "gl2"]
-DEFAULT_PPMODES = ["direct", "x_power"]
+DEFAULT_PPMODES = ["direct", "x_power", "bulk_power"]
 
 
 def _out_name(*, completion: str, pp_mode: str, p_mode: str, k_max: int) -> str:
-    prefix = "disc_direct" if pp_mode == "direct" else "disc_semigroup"
+    if pp_mode == "direct":
+        prefix = "disc_direct"
+    elif pp_mode == "x_power":
+        prefix = "disc_semigroup"
+    elif pp_mode == "bulk_power":
+        prefix = "disc_bulkpower"
+    else:
+        raise ValueError(f"unknown prime_power_mode: {pp_mode}")
     return f"{prefix}_{completion}_pmode_{p_mode}_b05_k{k_max}.csv"
 
 

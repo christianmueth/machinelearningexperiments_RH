@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
 import pandas as pd
 
 
@@ -104,6 +106,18 @@ def _infer_meta_from_filename(path: Path) -> RunMeta:
             filename=name,
         )
 
+    if name.startswith("disc_bulkpower_"):
+        k_max = _parse_kmax_from_name(name)
+        if k_max is None:
+            raise ValueError(f"Cannot infer k_max from filename: {name}")
+        return RunMeta(
+            completion=completion,
+            k_max=k_max,
+            prime_power_mode="bulk_power",
+            p_mode=p_mode,
+            filename=name,
+        )
+
     raise ValueError(f"Unrecognized run filename pattern: {name}")
 
 
@@ -130,6 +144,8 @@ def main() -> None:
         "disc_direct_gl2_pmode_*_b05_k*.csv",
         "disc_semigroup_zeta_pmode_*_b05_k*.csv",
         "disc_semigroup_gl2_pmode_*_b05_k*.csv",
+        "disc_bulkpower_zeta_pmode_*_b05_k*.csv",
+        "disc_bulkpower_gl2_pmode_*_b05_k*.csv",
     ]
 
     paths: list[Path] = []
@@ -171,6 +187,39 @@ def main() -> None:
             grp = grp.sort_values("mean_rel_l2_Fu_u02")
             parts = [f"{pm}({val:.6g})" for pm, val in zip(grp["p_mode"], grp["mean_rel_l2_Fu_u02"]) ]
             print(f"  k_max={kmax} | prime_power_mode={ppm}: " + " < ".join(parts))
+
+    # Completion-stability: compare rank order between zeta and gl2 for each regime.
+    # We compute Kendall tau on the ranks of p_mode among the intersection set.
+    print("\n=== Completion Stability (Kendall tau) ===")
+    for (kmax, ppm), grp in out.groupby(["k_max", "prime_power_mode"], dropna=False):
+        g_z = grp[grp["completion"] == "zeta"].copy()
+        g_g = grp[grp["completion"] == "gl2"].copy()
+        if g_z.empty or g_g.empty:
+            continue
+        common = sorted(set(g_z["p_mode"]).intersection(set(g_g["p_mode"])))
+        if len(common) < 2:
+            continue
+        rz = {pm: i for i, pm in enumerate(g_z.sort_values("mean_rel_l2_Fu_u02")["p_mode"].tolist())}
+        rg = {pm: i for i, pm in enumerate(g_g.sort_values("mean_rel_l2_Fu_u02")["p_mode"].tolist())}
+        a = np.array([rz[pm] for pm in common], dtype=int)
+        b = np.array([rg[pm] for pm in common], dtype=int)
+
+        n = int(len(common))
+        conc = 0
+        disc = 0
+        for i in range(n):
+            for j in range(i + 1, n):
+                s1 = int(a[i] - a[j])
+                s2 = int(b[i] - b[j])
+                if s1 == 0 or s2 == 0:
+                    continue
+                if (s1 > 0) == (s2 > 0):
+                    conc += 1
+                else:
+                    disc += 1
+        denom = conc + disc
+        tau = float((conc - disc) / denom) if denom > 0 else float("nan")
+        print(f"k_max={int(kmax)} | prime_power_mode={ppm}: tau={tau:.3f} over {len(common)} p_modes")
 
     # Save machine-readable summary
     summary_path = RUNS / "summary_rankings_u02.csv"

@@ -432,15 +432,17 @@ def _build_packets(
         raise ValueError("local_model must be 'sixby6' or 'satake'")
 
     prime_power_mode = str(prime_power_mode).strip().lower()
-    if prime_power_mode not in {"direct", "x_power"}:
-        raise ValueError("prime_power_mode must be one of: direct, x_power")
+    if prime_power_mode not in {"direct", "x_power", "bulk_power"}:
+        raise ValueError("prime_power_mode must be one of: direct, x_power, bulk_power")
     if local_model != "sixby6" and prime_power_mode != "direct":
         raise ValueError("prime_power_mode is only supported for local_model='sixby6'")
 
     for p in primes:
+        X1: np.ndarray | None = None
+        B1: np.ndarray | None = None
         if local_model == "sixby6" and prime_power_mode == "x_power":
-            # Semigroup-enforced prime-power tower: generate higher k blocks by powering
-            # a single upstream generator X_{p,1}.
+            # Semigroup-enforced prime-power tower (X-level): generate k>1 blocks by powering
+            # a single upstream generator X_{p,1}, then apply the rest of the reduction.
             X1, _, _ = _local_blocks_for_prime_power(
                 int(p),
                 1,
@@ -451,6 +453,20 @@ def _build_packets(
                 x_lower=float(x_lower),
                 p_mode=str(p_mode),
             )
+        elif local_model == "sixby6" and prime_power_mode == "bulk_power":
+            # Generator-first semigroup (bulk-level): build a single 6x6 bulk generator B_{p,1}
+            # and generate higher k blocks by powering B_{p,1} before Schur reduction.
+            _, A1, Ash1 = _local_blocks_for_prime_power(
+                int(p),
+                1,
+                sharp_mode=str(sharp_mode),
+                x_mode=str(x_mode),
+                x_gamma=float(x_gamma),
+                x_shear=float(x_shear),
+                x_lower=float(x_lower),
+                p_mode=str(p_mode),
+            )
+            B1 = _bulk_B_from_A(A1, Ash1)
 
         for k in range(1, int(k_max) + 1):
             if local_model == "sixby6":
@@ -465,12 +481,19 @@ def _build_packets(
                         x_lower=float(x_lower),
                         p_mode=str(p_mode),
                     )
-                else:
+                    B = _bulk_B_from_A(A, Ash)
+                elif prime_power_mode == "x_power":
+                    if X1 is None:
+                        raise RuntimeError("internal error: X1 not initialized for x_power")
                     Xk = np.linalg.matrix_power(np.asarray(X1, dtype=np.complex128), int(k))
                     A = _cayley(Xk)
                     Ash = _symplectic_partner(A, mode=str(sharp_mode))
+                    B = _bulk_B_from_A(A, Ash)
+                else:
+                    if B1 is None:
+                        raise RuntimeError("internal error: B1 not initialized for bulk_power")
+                    B = np.linalg.matrix_power(np.asarray(B1, dtype=np.complex128), int(k))
 
-                B = _bulk_B_from_A(A, Ash)
                 Lam = _schur_complement_Lambda(B, boundary=boundary, sign=str(sign))
                 S = _scattering_from_Lambda(Lam, mode=str(scattering_mode))
             else:
