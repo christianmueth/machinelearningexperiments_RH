@@ -97,6 +97,15 @@ class ThetaFit:
     median_abs_resid: float
 
 
+@dataclass(frozen=True)
+class ThetaFitABC:
+    a_over_p: float
+    b_logp: float
+    c: float
+    rmse: float
+    median_abs_resid: float
+
+
 def _fit_theta_a_over_p(primes: list[int], theta: np.ndarray) -> ThetaFit:
     p = np.asarray(primes, dtype=float).ravel()
     th = np.asarray(theta, dtype=float).ravel()
@@ -112,6 +121,29 @@ def _fit_theta_a_over_p(primes: list[int], theta: np.ndarray) -> ThetaFit:
     rmse = float(np.sqrt(np.mean(resid**2)))
     med_abs = float(np.median(np.abs(resid)))
     return ThetaFit(a_over_p=a, rmse=rmse, median_abs_resid=med_abs)
+
+
+def _fit_theta_a_over_p_plus_b_logp_plus_c(primes: list[int], theta: np.ndarray) -> ThetaFitABC:
+    p = np.asarray(primes, dtype=float).ravel()
+    th = np.asarray(theta, dtype=float).ravel()
+    if p.size != th.size or p.size == 0:
+        return ThetaFitABC(float("nan"), float("nan"), float("nan"), float("nan"), float("nan"))
+
+    x1 = 1.0 / p
+    x2 = np.log(p)
+    x3 = np.ones_like(p)
+    X = np.stack([x1, x2, x3], axis=1).astype(float)
+    y = th.reshape(-1, 1).astype(float)
+    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+    coef = coef.reshape(-1).astype(float)
+    a = float(coef[0])
+    b = float(coef[1])
+    c = float(coef[2])
+    th_fit = (X @ coef.reshape(-1, 1)).reshape(-1).astype(float)
+    resid = (th - th_fit).astype(float)
+    rmse = float(np.sqrt(np.mean(resid**2)))
+    med_abs = float(np.median(np.abs(resid)))
+    return ThetaFitABC(a_over_p=a, b_logp=b, c=c, rmse=rmse, median_abs_resid=med_abs)
 
 
 def _eig_deviation_stats(S: np.ndarray) -> tuple[float, float]:
@@ -193,6 +225,15 @@ def main() -> int:
     ap.add_argument("--r_max", type=int, default=8)
 
     ap.add_argument("--out_csv", required=True)
+
+    ap.add_argument(
+        "--check_exact_injection",
+        action="store_true",
+        help=(
+            "Compute an intrinsic-vs-injected closure metric by extracting eigenvalues from the sixby6 packets, "
+            "building an exact Satake table, and re-computing global Phi(s) with local_model='satake'."
+        ),
+    )
 
     # Fixed conventions (kept explicit to avoid ambiguity)
     ap.add_argument("--sharp", choices=["transpose", "conj_transpose"], default="conj_transpose")
@@ -279,6 +320,7 @@ def main() -> int:
             primes_used.append(int(p))
 
         theta_fit = _fit_theta_a_over_p(primes_used, np.asarray(thetas, dtype=float))
+        theta_fit_abc = _fit_theta_a_over_p_plus_b_logp_plus_c(primes_used, np.asarray(thetas, dtype=float))
 
         # Global packets (k=1) on the smaller prime set.
         global_packets = sim._build_packets(
@@ -301,6 +343,44 @@ def main() -> int:
 
         # Compute global Phi(t)
         Phi = _compute_global_phi(packets=global_packets, sigma=sigma, t_grid=t_grid)
+
+        # Optional closure check: rebuild global Phi(t) from the exact Satake table extracted from sixby6 packets.
+        rel_rmse_exact_injection = float("nan")
+        max_abs_exact_injection = float("nan")
+        if bool(args.check_exact_injection):
+            satake_table: dict[int, tuple[complex, complex]] = {}
+            for pkt in global_packets:
+                if int(pkt.k) != 1:
+                    continue
+                w = np.linalg.eigvals(np.asarray(pkt.S, dtype=np.complex128))
+                w = [complex(z) for z in w]
+                if len(w) != 2:
+                    raise RuntimeError("expected 2 eigenvalues")
+                satake_table[int(pkt.p)] = (w[0], w[1])
+
+            inj_packets = sim._build_packets(
+                primes_global,
+                1,
+                local_model="satake",
+                boundary=boundary,
+                sign=str(schur_sign),
+                sharp_mode=str(args.sharp),
+                x_mode=str(args.X_mode),
+                x_gamma=float(args.X_gamma),
+                x_shear=float(u),
+                x_lower=float(v),
+                scattering_mode=str(args.scattering),
+                satake_family="table",
+                satake_matrix="diag",
+                theta_scale=1.0,
+                seed=0,
+                satake_table=satake_table,
+            )
+            Phi_inj = _compute_global_phi(packets=inj_packets, sigma=sigma, t_grid=t_grid)
+            w_wt = _trapz_weights(t_grid)
+            denom = _weighted_norm(w_wt, Phi) + 1e-300
+            rel_rmse_exact_injection = _weighted_norm(w_wt, Phi - Phi_inj) / denom
+            max_abs_exact_injection = float(np.max(np.abs(Phi - Phi_inj)))
 
         # Full matched filter coefficients and recon
         coeff_full = _matched_filter_coeffs(t_grid, Phi, sigma=sigma, n_list=n_list)
@@ -343,9 +423,16 @@ def main() -> int:
             "theta_fit_a_over_p": float(theta_fit.a_over_p),
             "theta_fit_rmse": float(theta_fit.rmse),
             "theta_fit_median_abs_resid": float(theta_fit.median_abs_resid),
+            "theta_fit_abc_a_over_p": float(theta_fit_abc.a_over_p),
+            "theta_fit_abc_b_logp": float(theta_fit_abc.b_logp),
+            "theta_fit_abc_c": float(theta_fit_abc.c),
+            "theta_fit_abc_rmse": float(theta_fit_abc.rmse),
+            "theta_fit_abc_median_abs_resid": float(theta_fit_abc.median_abs_resid),
             "rel_rmse_full": float(rel_full),
             "rel_rmse_pp": float(rel_pp),
             "rel_rmse_satake_template": float(rel_tpl),
+            "rel_rmse_exact_injection": float(rel_rmse_exact_injection),
+            "max_abs_exact_injection": float(max_abs_exact_injection),
             "coeff_energy_frac_primepowers": float(frac_pp),
             "n_max": int(n_max),
             "r_max": int(args.r_max),
