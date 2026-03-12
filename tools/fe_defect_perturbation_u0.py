@@ -9,11 +9,17 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 # Import simulator module from sibling file (tools/ is not a package).
 _TOOLS_DIR = Path(__file__).resolve().parent
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 import six_by_six_prime_tower_sim as sim  # type: ignore
+
+from src.arithmetic.mobius import mobius_invert_divisor_sum_linear
 
 try:
     import mpmath as mp  # type: ignore
@@ -196,6 +202,117 @@ class DefectSummary:
     basis: str
     rel_l2_F: float
     max_abs_F: float
+
+
+def _packet_observable(pkt: sim.Packet, *, mode: str) -> complex:
+    mode = str(mode).strip().lower()
+    if mode == "trs":
+        return complex(np.trace(np.asarray(pkt.S, dtype=np.complex128)))
+    if mode == "trlam":
+        return complex(np.trace(np.asarray(pkt.Lam, dtype=np.complex128)))
+    if mode == "dets":
+        return complex(np.linalg.det(np.asarray(pkt.S, dtype=np.complex128)))
+    if mode == "devs_pm_i":
+        S = np.asarray(pkt.S, dtype=np.complex128)
+        I2 = np.eye(2, dtype=np.complex128)
+        dev = float(min(np.linalg.norm(S - I2, ord="fro"), np.linalg.norm(S + I2, ord="fro")))
+        return complex(dev)
+    if mode == "frolam":
+        Lam = np.asarray(pkt.Lam, dtype=np.complex128)
+        return complex(float(np.linalg.norm(Lam, ord="fro")))
+    raise ValueError("k_obs_mode must be one of: none, trS, trLam, detS, devS_pm_I, froLam")
+
+
+def _k_observable_sequence(
+    packets: list[sim.Packet],
+    *,
+    k_max: int,
+    mode: str,
+    aggregate: str,
+) -> tuple[list[complex], list[int]]:
+    """Return (F_k, count_k) indexed by k=0..k_max."""
+
+    mode = str(mode).strip().lower()
+    if mode in {"none", ""}:
+        return ([0.0j] * (int(k_max) + 1), [0] * (int(k_max) + 1))
+
+    aggregate = str(aggregate).strip().lower()
+    if aggregate not in {"sum", "mean"}:
+        raise ValueError("k_obs_aggregate must be one of: sum, mean")
+
+    k_max = int(k_max)
+    F: list[complex] = [0.0j] * (k_max + 1)
+    cnt: list[int] = [0] * (k_max + 1)
+    for pkt in packets:
+        k = int(pkt.k)
+        if k < 1 or k > k_max:
+            continue
+        F[k] = complex(F[k] + _packet_observable(pkt, mode=mode))
+        cnt[k] += 1
+
+    if aggregate == "mean":
+        for k in range(1, k_max + 1):
+            if cnt[k] > 0:
+                F[k] = complex(F[k] / float(cnt[k]))
+
+    return F, cnt
+
+
+def _k_observable_by_prime(
+    packets: list[sim.Packet],
+    *,
+    k_max: int,
+    mode: str,
+    aggregate: str,
+) -> tuple[dict[int, list[complex]], dict[int, list[int]]]:
+    """Return (F_{p,k}, count_{p,k}) keyed by prime p, each indexed by k=0..k_max."""
+
+    mode = str(mode).strip().lower()
+    if mode in {"none", ""}:
+        return {}, {}
+
+    aggregate = str(aggregate).strip().lower()
+    if aggregate not in {"sum", "mean"}:
+        raise ValueError("k_obs_aggregate must be one of: sum, mean")
+
+    k_max = int(k_max)
+
+    F_by_p: dict[int, list[complex]] = {}
+    cnt_by_p: dict[int, list[int]] = {}
+
+    for pkt in packets:
+        p = int(pkt.p)
+        k = int(pkt.k)
+        if k < 1 or k > k_max:
+            continue
+        if p not in F_by_p:
+            F_by_p[p] = [0.0j] * (k_max + 1)
+            cnt_by_p[p] = [0] * (k_max + 1)
+        F_by_p[p][k] = complex(F_by_p[p][k] + _packet_observable(pkt, mode=mode))
+        cnt_by_p[p][k] += 1
+
+    if aggregate == "mean":
+        for p, F in F_by_p.items():
+            cnt = cnt_by_p[p]
+            for k in range(1, k_max + 1):
+                if cnt[k] > 0:
+                    F[k] = complex(F[k] / float(cnt[k]))
+
+    return F_by_p, cnt_by_p
+
+
+def _l2_abs_over_k(z: list[complex]) -> float:
+    if len(z) <= 1:
+        return 0.0
+    arr = np.asarray(z[1:], dtype=np.complex128)
+    return float(np.sqrt(float(np.sum(np.abs(arr) ** 2))))
+
+
+def _max_abs_over_k(z: list[complex]) -> float:
+    if len(z) <= 1:
+        return 0.0
+    arr = np.asarray(z[1:], dtype=np.complex128)
+    return float(np.max(np.abs(arr)))
 
 
 def _build_packets_for_u(
@@ -494,6 +611,46 @@ def main() -> int:
     )
     ap.add_argument("--scattering", choices=["lambda_pm_i", "i_pm_lambda"], default="i_pm_lambda")
 
+    ap.add_argument(
+        "--k_obs_mode",
+        choices=["none", "trS", "trLam", "detS", "devS_pm_I", "froLam"],
+        default="none",
+        help=(
+            "Optional per-k packet observable to extract (aggregated across primes). "
+            "This is computed directly from the packet path before any downstream comparison."
+        ),
+    )
+    ap.add_argument(
+        "--k_obs_aggregate",
+        choices=["sum", "mean"],
+        default="sum",
+        help="How to aggregate the observable across primes at fixed k.",
+    )
+    ap.add_argument(
+        "--k_obs_apply_mobius",
+        choices=["0", "1"],
+        default="0",
+        help="If 1, apply Möbius primitive extraction over k: P(k)=sum_{d|k} mu(d) F(k/d).",
+    )
+    ap.add_argument(
+        "--k_obs_out_csv",
+        default="",
+        help=(
+            "Optional output CSV for per-k observable tables (columns include F_k and optional P_k). "
+            "Rows are emitted for u=0, u=±h, and any u in --u_list."
+        ),
+    )
+
+    ap.add_argument(
+        "--k_obs_emit_per_prime",
+        choices=["0", "1"],
+        default="0",
+        help=(
+            "If 1, and --k_obs_out_csv is set, also emit per-prime per-k rows (adds a 'p' column). "
+            "This enables prime-power scaling / semigroup-law diagnostics on the primitive-extracted layer."
+        ),
+    )
+
     ap.add_argument("--out_csv", required=True)
     ap.add_argument(
         "--out_profile_csv",
@@ -648,6 +805,101 @@ def main() -> int:
         scattering_mode=str(args.scattering),
     )
 
+    k_obs_mode = str(args.k_obs_mode)
+    k_obs_agg = str(args.k_obs_aggregate)
+    k_obs_apply_mobius = str(args.k_obs_apply_mobius).strip() == "1"
+    k_obs_emit_per_prime = str(args.k_obs_emit_per_prime).strip() == "1"
+
+    kobs_rows: list[dict] = []
+    kobs_summaries: dict[str, dict[str, float]] = {}
+
+    def _collect_kobs(label: str, u_val: float, packets: list[sim.Packet]) -> None:
+        if str(k_obs_mode).strip().lower() in {"none", ""}:
+            return
+
+        Fk, cntk = _k_observable_sequence(
+            packets,
+            k_max=int(k_max),
+            mode=str(k_obs_mode),
+            aggregate=str(k_obs_agg),
+        )
+        Pk: list[complex] | None = None
+        if k_obs_apply_mobius:
+            Pk = [complex(x) for x in mobius_invert_divisor_sum_linear([complex(x) for x in Fk])]
+
+        kobs_summaries[str(label)] = {
+            "kobs_F_l2": float(_l2_abs_over_k(Fk)),
+            "kobs_F_maxabs": float(_max_abs_over_k(Fk)),
+            "kobs_P_l2": float(_l2_abs_over_k(Pk)) if Pk is not None else float("nan"),
+            "kobs_P_maxabs": float(_max_abs_over_k(Pk)) if Pk is not None else float("nan"),
+        }
+
+        # Optional per-k table.
+        if str(args.k_obs_out_csv).strip():
+            for k in range(1, int(k_max) + 1):
+                r: dict[str, object] = {
+                    "label": str(label),
+                    "u": float(u_val),
+                    "k": int(k),
+                    "k_obs_mode": str(k_obs_mode),
+                    "k_obs_aggregate": str(k_obs_agg),
+                    "k_obs_scope": "global",
+                    "n_packets_k": int(cntk[k]),
+                    "F_k_re": float(np.real(Fk[k])),
+                    "F_k_im": float(np.imag(Fk[k])),
+                    "F_k_abs": float(abs(Fk[k])),
+                }
+                if Pk is not None:
+                    r.update(
+                        {
+                            "P_k_re": float(np.real(Pk[k])),
+                            "P_k_im": float(np.imag(Pk[k])),
+                            "P_k_abs": float(abs(Pk[k])),
+                        }
+                    )
+                kobs_rows.append(r)
+
+            if k_obs_emit_per_prime:
+                F_by_p, cnt_by_p = _k_observable_by_prime(
+                    packets,
+                    k_max=int(k_max),
+                    mode=str(k_obs_mode),
+                    aggregate=str(k_obs_agg),
+                )
+                for p in sorted(F_by_p.keys()):
+                    Fp = F_by_p[p]
+                    Pp: list[complex] | None = None
+                    if k_obs_apply_mobius:
+                        Pp = [complex(x) for x in mobius_invert_divisor_sum_linear([complex(x) for x in Fp])]
+                    cntp = cnt_by_p[p]
+                    for k in range(1, int(k_max) + 1):
+                        r2: dict[str, object] = {
+                            "label": str(label),
+                            "u": float(u_val),
+                            "p": int(p),
+                            "k": int(k),
+                            "k_obs_mode": str(k_obs_mode),
+                            "k_obs_aggregate": str(k_obs_agg),
+                            "k_obs_scope": "per_prime",
+                            "n_packets_k": int(cntp[k]),
+                            "F_k_re": float(np.real(Fp[k])),
+                            "F_k_im": float(np.imag(Fp[k])),
+                            "F_k_abs": float(abs(Fp[k])),
+                        }
+                        if Pp is not None:
+                            r2.update(
+                                {
+                                    "P_k_re": float(np.real(Pp[k])),
+                                    "P_k_im": float(np.imag(Pp[k])),
+                                    "P_k_abs": float(abs(Pp[k])),
+                                }
+                            )
+                        kobs_rows.append(r2)
+
+    _collect_kobs("u0", 0.0, packets_0)
+    _collect_kobs("u_plus_h", +h, packets_p)
+    _collect_kobs("u_minus_h", -h, packets_m)
+
     s_line = (sigma + 1j * t_grid).astype(np.complex128)
     s_reflect = (1.0 - sigma - 1j * t_grid).astype(np.complex128)
 
@@ -706,6 +958,8 @@ def main() -> int:
         ("dF_du_u0", 0.0, dF),
         ("d2F_du2_u0", 0.0, d2F),
     ]:
+        kobs_key = "u0" if label == "F0" else ("u_plus_h" if label == "Fp" else ("u_minus_h" if label == "Fm" else ""))
+        kobs = kobs_summaries.get(kobs_key, {})
         rows.append(
             {
                 "label": str(label),
@@ -724,6 +978,13 @@ def main() -> int:
                 "prime_power_mode": str(args.prime_power_mode),
                 "rel_l2": float(rel(F)),
                 "max_abs": float(np.max(np.abs(F))),
+                "k_obs_mode": str(k_obs_mode),
+                "k_obs_aggregate": str(k_obs_agg),
+                "k_obs_apply_mobius": int(1 if k_obs_apply_mobius else 0),
+                "kobs_F_l2": float(kobs.get("kobs_F_l2", float("nan"))),
+                "kobs_F_maxabs": float(kobs.get("kobs_F_maxabs", float("nan"))),
+                "kobs_P_l2": float(kobs.get("kobs_P_l2", float("nan"))),
+                "kobs_P_maxabs": float(kobs.get("kobs_P_maxabs", float("nan"))),
             }
         )
 
@@ -743,6 +1004,7 @@ def main() -> int:
             prime_power_mode=str(args.prime_power_mode),
             scattering_mode=str(args.scattering),
         )
+        _collect_kobs(f"u_{u_val:g}", float(u_val), packets_u)
         Fu = defect_for_packets(packets_u)
         rows.append(
             {
@@ -762,12 +1024,26 @@ def main() -> int:
                 "prime_power_mode": str(args.prime_power_mode),
                 "rel_l2": float(rel(Fu)),
                 "max_abs": float(np.max(np.abs(Fu))),
+                "k_obs_mode": str(k_obs_mode),
+                "k_obs_aggregate": str(k_obs_agg),
+                "k_obs_apply_mobius": int(1 if k_obs_apply_mobius else 0),
+                "kobs_F_l2": float(kobs_summaries.get(f"u_{u_val:g}", {}).get("kobs_F_l2", float("nan"))),
+                "kobs_F_maxabs": float(kobs_summaries.get(f"u_{u_val:g}", {}).get("kobs_F_maxabs", float("nan"))),
+                "kobs_P_l2": float(kobs_summaries.get(f"u_{u_val:g}", {}).get("kobs_P_l2", float("nan"))),
+                "kobs_P_maxabs": float(kobs_summaries.get(f"u_{u_val:g}", {}).get("kobs_P_maxabs", float("nan"))),
             }
         )
 
     out_path = Path(args.out_csv)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(out_path, index=False)
+
+    kobs_out = str(args.k_obs_out_csv).strip()
+    if kobs_out and kobs_rows:
+        kobs_path = Path(kobs_out)
+        kobs_path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(kobs_rows).to_csv(kobs_path, index=False)
+        print(f"wrote k-obs table {kobs_path}")
 
     profile_path = str(args.out_profile_csv).strip()
     if profile_path:

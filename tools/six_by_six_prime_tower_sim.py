@@ -335,6 +335,109 @@ class Packet:
     Lam: np.ndarray  # 2x2
 
 
+def _prime_power_from_n(n: int) -> tuple[int, int] | None:
+    """If n is a prime power p^k with k>=1, return (p,k). Else return None."""
+
+    n0 = int(n)
+    if n0 < 2:
+        return None
+
+    # Trial division is sufficient for the small/medium n typically used in this repo.
+    if n0 % 2 == 0:
+        p = 2
+    else:
+        p = 3
+        while p * p <= n0 and (n0 % p) != 0:
+            p += 2
+        if n0 % p != 0:
+            # n0 is prime
+            return (n0, 1)
+
+    k = 0
+    m = n0
+    while m % p == 0:
+        m //= p
+        k += 1
+    if m != 1:
+        return None
+    return (int(p), int(k))
+
+
+def _build_packets_from_ns(
+    ns: list[int],
+    *,
+    local_model: str,
+    boundary: tuple[int, int],
+    sign: str,
+    sharp_mode: str,
+    x_mode: str,
+    x_gamma: float,
+    x_shear: float,
+    x_lower: float,
+    p_mode: str = "p",
+    scattering_mode: str,
+    satake_family: str,
+    satake_matrix: str,
+    theta_scale: float,
+    seed: int,
+    satake_table: Mapping[int, tuple[complex, complex]] | None = None,
+) -> list[Packet]:
+    """Build packets for a provided semigroup index list n.
+
+    This intentionally restricts to prime powers n=p^k so we can reuse the existing
+    (p,k,ell) packet representation. This is a stepping-stone toward dyadic-seed towers
+    where users can pass n=2^k without explicitly listing primes.
+    """
+
+    local_model = str(local_model).strip().lower()
+    if local_model not in {"sixby6", "satake"}:
+        raise ValueError("local_model must be 'sixby6' or 'satake'")
+
+    packets: list[Packet] = []
+    for n in ns:
+        pk = _prime_power_from_n(int(n))
+        if pk is None:
+            raise ValueError(f"--ns requires prime powers n=p^k; got n={int(n)}")
+        p, k = int(pk[0]), int(pk[1])
+
+        if local_model == "sixby6":
+            _, A, Ash = _local_blocks_for_prime_power(
+                int(p),
+                int(k),
+                sharp_mode=str(sharp_mode),
+                x_mode=str(x_mode),
+                x_gamma=float(x_gamma),
+                x_shear=float(x_shear),
+                x_lower=float(x_lower),
+                p_mode=str(p_mode),
+            )
+            B = _bulk_B_from_A(A, Ash)
+            Lam = _schur_complement_Lambda(B, boundary=boundary, sign=str(sign))
+            S = _scattering_from_Lambda(Lam, mode=str(scattering_mode))
+        else:
+            # Satake injection model is indexed by prime p; for n=p^k we reuse the same S_p.
+            if satake_table is not None:
+                ab = satake_table.get(int(p))
+                if ab is None:
+                    raise KeyError(f"satake_table missing prime p={int(p)}")
+                alpha, beta = complex(ab[0]), complex(ab[1])
+            else:
+                alpha, beta = _satake_params_for_prime(
+                    int(p),
+                    family=str(satake_family),
+                    theta_scale=float(theta_scale),
+                    seed=int(seed),
+                )
+            S = _satake_matrix_from_params(alpha, beta, mode=str(satake_matrix))
+            Lam = np.zeros((2, 2), dtype=np.complex128)
+
+        # Keep the existing length convention ell = k log p, but compute as log n for robustness.
+        ell = float(math.log(float(int(n))))
+        packets.append(Packet(p=int(p), k=int(k), ell=float(ell), S=S, Lam=Lam))
+
+    return packets
+
+
 def _boundary_search(
     packets_seed: list[int],
     k_seed: list[int],
@@ -549,8 +652,22 @@ def main() -> int:
             "Emits D(s)=det(I-K(s)) on a vertical line for Mangoldt-probe fitting."
         )
     )
-    ap.add_argument("--primes", default="2,3,5,7,11,13", help="Comma list of primes p")
+    ap.add_argument(
+        "--primes",
+        default="2,3,5,7,11,13",
+        help="Comma list of primes p (ignored if --ns is provided)",
+    )
     ap.add_argument("--k_max", type=int, default=6, help="Max exponent k for each prime (uses k=1..k_max)")
+
+    ap.add_argument(
+        "--ns",
+        default="",
+        help=(
+            "Optional comma list of semigroup indices n. Each n must be a prime power p^k, "
+            "e.g. '2,4,8,16' for a dyadic tower. If provided, packets are built from this list "
+            "instead of from --primes/--k_max."
+        ),
+    )
 
     ap.add_argument("--sigma", type=float, default=2.0, help="Real part of s")
     ap.add_argument("--t_min", type=float, default=10.0)
@@ -684,12 +801,27 @@ def main() -> int:
 
     args = ap.parse_args()
 
-    primes = _parse_int_list(args.primes)
-    if not primes:
-        raise SystemExit("--primes must be non-empty")
-    k_max = int(args.k_max)
-    if k_max < 1:
-        raise SystemExit("--k_max must be >=1")
+    ns = _parse_int_list(args.ns) if str(args.ns).strip() else []
+    primes: list[int] = []
+    k_max = 0
+    if ns:
+        pks: list[tuple[int, int]] = []
+        for n in ns:
+            pk = _prime_power_from_n(int(n))
+            if pk is None:
+                raise SystemExit(f"--ns requires prime powers n=p^k; got n={int(n)}")
+            pks.append((int(pk[0]), int(pk[1])))
+        primes = sorted({p for p, _ in pks})
+        k_max = max((k for _, k in pks), default=0)
+        if k_max < 1:
+            raise SystemExit("--ns must contain at least one n>=2")
+    else:
+        primes = _parse_int_list(args.primes)
+        if not primes:
+            raise SystemExit("--primes must be non-empty")
+        k_max = int(args.k_max)
+        if k_max < 1:
+            raise SystemExit("--k_max must be >=1")
 
     # Choose boundary convention.
     boundary_arg = str(args.boundary).strip().lower()
@@ -732,25 +864,45 @@ def main() -> int:
             raise SystemExit("--satake_table_csv is required when --satake_family table")
         satake_table = _load_satake_table_csv(str(args.satake_table_csv))
 
-    packets = _build_packets(
-        primes,
-        k_max,
-        local_model=str(args.local_model),
-        boundary=boundary,
-        sign=schur_sign,
-        sharp_mode=str(args.sharp),
-        x_mode=str(args.X_mode),
-        x_gamma=float(args.X_gamma),
-        x_shear=float(args.X_shear),
-        x_lower=float(args.X_lower),
-        p_mode=str(args.p_mode),
-        scattering_mode=str(args.scattering),
-        satake_family=str(args.satake_family),
-        satake_matrix=str(args.satake_matrix),
-        theta_scale=float(args.theta_scale),
-        seed=int(args.seed),
-        satake_table=satake_table,
-    )
+    if ns:
+        packets = _build_packets_from_ns(
+            ns,
+            local_model=str(args.local_model),
+            boundary=boundary,
+            sign=schur_sign,
+            sharp_mode=str(args.sharp),
+            x_mode=str(args.X_mode),
+            x_gamma=float(args.X_gamma),
+            x_shear=float(args.X_shear),
+            x_lower=float(args.X_lower),
+            p_mode=str(args.p_mode),
+            scattering_mode=str(args.scattering),
+            satake_family=str(args.satake_family),
+            satake_matrix=str(args.satake_matrix),
+            theta_scale=float(args.theta_scale),
+            seed=int(args.seed),
+            satake_table=satake_table,
+        )
+    else:
+        packets = _build_packets(
+            primes,
+            k_max,
+            local_model=str(args.local_model),
+            boundary=boundary,
+            sign=schur_sign,
+            sharp_mode=str(args.sharp),
+            x_mode=str(args.X_mode),
+            x_gamma=float(args.X_gamma),
+            x_shear=float(args.X_shear),
+            x_lower=float(args.X_lower),
+            p_mode=str(args.p_mode),
+            scattering_mode=str(args.scattering),
+            satake_family=str(args.satake_family),
+            satake_matrix=str(args.satake_matrix),
+            theta_scale=float(args.theta_scale),
+            seed=int(args.seed),
+            satake_table=satake_table,
+        )
     if not packets:
         raise SystemExit("no packets built")
 
