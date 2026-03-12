@@ -1,0 +1,60 @@
+# Operator-level pivot: replace truncated Hecke generators by a commutative
+# jointly-packetized/diagonalized family BEFORE DN->scattering.
+# Then run the same boundary-sample emission so Mangoldt gate is unchanged.
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+Ns: [64]
+
+boundary_frac: 0.25
+eta: 1.0
+schur_jitter: 1.0e-10
+cayley_eps: 0.0
+
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+dual_scale: 1.0
+
+generator_norm: fro
+generator_norm_target: 1.0
+weight_k: 0
+
+# Operator-family knobs
+# - eps_prime_mode: '2s-1' (doc ladder scaling) or 's' (classical scaling)
+# - generator_packetize_mode: 'comm_diag' enforces exact commutation channels
+# - generator_packetize_basis_mode: 'sum_norm' approximates joint diagonalization
+
+eps_prime_mode: 2s-1
+generator_packetize_mode: comm_diag
+generator_packetize_basis_mode: sum_norm
+
+# Normalization point
+s0: 2.0
+
+# Use Euler-partial targets (fast)
+phi_target_mode: euler_partial
+phi_select_mode: euler_partial
+
+# Convergence-only sweep + boundary sampling
+#do_convergence_sweep_only keeps runtime reasonable and still emits boundary samples
+
+do_convergence_sweep_only: true
+
+# Rectangle; Mangoldt probe will use the RIGHT side (sigma=sigma_max)
+convergence_rect: [1.90, 2.00, 10.0, 30.0]
+convergence_n_sigma: 5
+convergence_n_t: 20
+
+convergence_do_winding: false
+convergence_do_magphase_diag: false
+convergence_wind_basis: rel
+convergence_wind_block: plus
+
+# Boundary discretization
+convergence_wind_n_edge: 1200
+
+convergence_emit_boundary_samples: true
+convergence_boundary_samples_out_csv: E_Qlambda_convergence_boundary_samples.csv
+
+mp_dps: 50
+print_progress: false

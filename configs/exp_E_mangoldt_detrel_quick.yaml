@@ -1,0 +1,49 @@
+# Quick convergence-only run to emit boundary samples including det_rel_{re,im}
+# for decisive Mangoldt rigidity probing.
+
+# Keep model spine consistent with Experiment E defaults
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+Ns: [64]
+
+boundary_frac: 0.25
+eta: 1.0
+schur_jitter: 1.0e-10
+
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+dual_scale: 1.0
+
+generator_norm: fro
+generator_norm_target: 1.0
+weight_k: 0
+
+# Normalization point
+s0: 2.0
+
+# Use Euler-partial targets (fast, no completion)
+phi_target_mode: euler_partial
+phi_select_mode: euler_partial
+
+# Convergence-only sweep + boundary sampling
+do_convergence_sweep_only: true
+
+# Rectangle; Mangoldt probe will use the RIGHT side (sigma=sigma_max)
+convergence_rect: [1.90, 2.00, 10.0, 30.0]
+convergence_n_sigma: 5
+convergence_n_t: 20
+
+convergence_do_winding: false
+convergence_do_magphase_diag: false
+convergence_wind_basis: rel
+convergence_wind_block: plus
+
+# Boundary discretization; right side gets ~1/4 of points
+convergence_wind_n_edge: 1600
+
+convergence_emit_boundary_samples: true
+convergence_boundary_samples_out_csv: E_Qlambda_convergence_boundary_samples.csv
+
+# Keep runtime reasonable
+mp_dps: 50
+print_progress: false

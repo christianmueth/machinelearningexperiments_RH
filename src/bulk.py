@@ -14,14 +14,21 @@ class BulkParams:
     weight_k: int = 0
 
 
-def eps_prime(p: int, s: complex) -> complex:
-    """Default epsilon(p; s) used in the doc’s ladder signatures.
+def eps_prime(p: int, s: complex, *, mode: str = "2s-1") -> complex:
+    """Prime weight epsilon(p; s) used to assemble the bulk operator.
 
-    Uses p^{-(2s-1)} so that powers generate p^{-m(2s-1)}.
+    Modes:
+      - '2s-1' (default): p^{-(2s-1)} so powers generate p^{-m(2s-1)}
+      - 's': p^{-s} (a more classical Dirichlet-series scaling)
     """
 
     p = int(p)
-    return p ** (-(2.0 * s - 1.0))
+    mm = str(mode).strip().lower()
+    if mm in {"2s-1", "2s1", "2sminus1", "default"}:
+        return p ** (-(2.0 * s - 1.0))
+    if mm in {"s", "-s", "classic"}:
+        return p ** (-s)
+    raise ValueError(f"unknown eps_prime mode: {mode!r}")
 
 
 def eps_n(n: int, s: complex) -> complex:
@@ -83,6 +90,78 @@ def _dual_involution_J(N: int) -> np.ndarray:
     return J
 
 
+def _commutative_packetize_generators(
+    primes: list[int],
+    *,
+    hecke_params: HeckeParams,
+    generator_norm: str | None,
+    generator_norm_target: float,
+    basis_mode: str = "sum_norm",
+    diag_real: bool = True,
+) -> dict[int, np.ndarray]:
+    """Return commuting approximants for {T_p} in a canonical joint packet basis.
+
+    This is an operator-level pivot: we *replace* the truncated Hecke generators
+    by their jointly-diagonalized (commutative) approximants.
+
+    Construction:
+      - Start from symmetric part 0.5(T+T^T) (as used elsewhere in two-channel mode).
+      - Form Gram family G_p = T_p T_p^* on the one-channel space.
+      - Choose an orthonormal basis U from a canonical combination of {G_p}.
+      - For each p, set T_p^comm = U diag(diag(U^* T_p U)) U^* (optionally real-diagonal).
+
+    The resulting family commutes exactly (all diagonal in the same U basis).
+    """
+
+    primes = [int(p) for p in primes if int(p) > 1]
+    if not primes:
+        return {}
+
+    def _sym(T: np.ndarray) -> np.ndarray:
+        T = np.asarray(T, dtype=np.complex128)
+        return 0.5 * (T + T.T)
+
+    Tps: dict[int, np.ndarray] = {}
+    for p in primes:
+        Tp = _sym(hecke_Tn(int(p), hecke_params))
+        Tp = _normalize_operator(Tp, method=generator_norm, target=generator_norm_target)
+        Tps[int(p)] = np.asarray(Tp, dtype=np.complex128)
+
+    # Gram operators (Hermitian, PSD-ish)
+    Gps: dict[int, np.ndarray] = {}
+    for p, Tp in Tps.items():
+        Gps[p] = (Tp @ Tp.conj().T).astype(np.complex128)
+
+    basis_mode = str(basis_mode).strip().lower()
+    Gsum = np.zeros_like(next(iter(Gps.values())))
+    if basis_mode in {"p0", "first"}:
+        p0 = int(primes[0])
+        Gsum = np.asarray(Gps[p0], dtype=np.complex128)
+    elif basis_mode in {"sum", "add"}:
+        for p in primes:
+            Gsum = (Gsum + Gps[int(p)]).astype(np.complex128)
+    elif basis_mode in {"sum_norm", "sum_trace_norm", "trace_norm"}:
+        for p in primes:
+            tr = complex(np.trace(Gps[int(p)]))
+            scale = 1.0 / (float(np.real(tr)) + 1e-300)
+            Gsum = (Gsum + scale * Gps[int(p)]).astype(np.complex128)
+    else:
+        raise ValueError(f"unknown packet basis_mode: {basis_mode!r}")
+
+    # Eigenbasis for canonical packetization
+    _, U = np.linalg.eigh(Gsum)
+    U = np.asarray(U, dtype=np.complex128)
+
+    out: dict[int, np.ndarray] = {}
+    for p, Tp in Tps.items():
+        M = (U.conj().T @ Tp @ U).astype(np.complex128)
+        d = np.diag(M)
+        if diag_real:
+            d = np.real(d)
+        out[p] = (U @ np.diag(d) @ U.conj().T).astype(np.complex128)
+    return out
+
+
 def build_A(
     *,
     s: complex,
@@ -98,6 +177,10 @@ def build_A(
     bulk_mode: str = "one_channel",
     completion_mode: str = "none",
     dual_scale: float = 1.0,
+    eps_prime_mode: str = "2s-1",
+    prime_assembly_mode: str = "additive",
+    generator_packetize_mode: str = "none",
+    generator_packetize_basis_mode: str = "sum_norm",
     return_components: bool = False,
 ) -> np.ndarray:
     N = int(params.N)
@@ -123,13 +206,54 @@ def build_A(
     if bulk_mode == "two_channel_symmetric":
         # Two-channel assembly: A is 2N x 2N with off-diagonal s / (1-s) blocks.
         # This is a cheap, explicit way to realize the doc's bulk duality under channel-swap.
+        prime_assembly_mode = str(prime_assembly_mode).strip().lower()
+        if prime_assembly_mode not in {"additive", "sum", "euler_product", "product"}:
+            raise ValueError("prime_assembly_mode must be one of: additive, euler_product")
+
         K_s = np.zeros((N, N), dtype=np.complex128)
         K_1ms = np.zeros((N, N), dtype=np.complex128)
-        for p in primes:
-            Tp = _sym(hecke_Tn(int(p), hecke_params))
-            Tp = _normalize_operator(Tp, method=generator_norm, target=generator_norm_target)
-            K_s = K_s + eps_prime(int(p), s) * Tp
-            K_1ms = K_1ms + eps_prime(int(p), (1.0 - s)) * Tp
+        gen_mode = str(generator_packetize_mode).strip().lower()
+        if gen_mode not in {"none", "comm_diag", "commutative_diag", "packet_comm_diag"}:
+            raise ValueError("generator_packetize_mode must be one of: none, comm_diag")
+
+        Tp_comm: dict[int, np.ndarray] | None = None
+        if gen_mode != "none" and primes:
+            Tp_comm = _commutative_packetize_generators(
+                list(primes),
+                hecke_params=hecke_params,
+                generator_norm=generator_norm,
+                generator_norm_target=generator_norm_target,
+                basis_mode=str(generator_packetize_basis_mode),
+                diag_real=True,
+            )
+
+        if prime_assembly_mode in {"additive", "sum"}:
+            for p in primes:
+                if Tp_comm is None:
+                    Tp = _sym(hecke_Tn(int(p), hecke_params))
+                    Tp = _normalize_operator(Tp, method=generator_norm, target=generator_norm_target)
+                else:
+                    Tp = Tp_comm[int(p)]
+
+                K_s = K_s + eps_prime(int(p), s, mode=str(eps_prime_mode)) * Tp
+                K_1ms = K_1ms + eps_prime(int(p), (1.0 - s), mode=str(eps_prime_mode)) * Tp
+        else:
+            I = np.eye(N, dtype=np.complex128)
+            P_s = I.copy()
+            P_1ms = I.copy()
+            for p in primes:
+                if Tp_comm is None:
+                    Tp = _sym(hecke_Tn(int(p), hecke_params))
+                    Tp = _normalize_operator(Tp, method=generator_norm, target=generator_norm_target)
+                else:
+                    Tp = Tp_comm[int(p)]
+
+                wp_s = eps_prime(int(p), s, mode=str(eps_prime_mode))
+                wp_1ms = eps_prime(int(p), (1.0 - s), mode=str(eps_prime_mode))
+                P_s = (P_s @ np.linalg.inv(I - wp_s * Tp)).astype(np.complex128)
+                P_1ms = (P_1ms @ np.linalg.inv(I - wp_1ms * Tp)).astype(np.complex128)
+            K_s = (P_s - I).astype(np.complex128)
+            K_1ms = (P_1ms - I).astype(np.complex128)
 
         comps_list: list[int] = []
         if comps:
@@ -191,6 +315,10 @@ def build_two_channel_UW(
     match_comp_to_prime: bool = False,
     completion_mode: str = "none",
     dual_scale: float = 1.0,
+    eps_prime_mode: str = "2s-1",
+    prime_assembly_mode: str = "additive",
+    generator_packetize_mode: str = "none",
+    generator_packetize_basis_mode: str = "sum_norm",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build two-channel off-diagonal blocks (U, W) without assembling A2.
 
@@ -212,13 +340,54 @@ def build_two_channel_UW(
         T = np.asarray(T, dtype=np.complex128)
         return 0.5 * (T + T.T)
 
+    gen_mode = str(generator_packetize_mode).strip().lower()
+    if gen_mode not in {"none", "comm_diag", "commutative_diag", "packet_comm_diag"}:
+        raise ValueError("generator_packetize_mode must be one of: none, comm_diag")
+
+    Tp_comm: dict[int, np.ndarray] | None = None
+    if gen_mode != "none" and primes:
+        Tp_comm = _commutative_packetize_generators(
+            list(primes),
+            hecke_params=hecke_params,
+            generator_norm=generator_norm,
+            generator_norm_target=generator_norm_target,
+            basis_mode=str(generator_packetize_basis_mode),
+            diag_real=True,
+        )
+
+    prime_assembly_mode = str(prime_assembly_mode).strip().lower()
+    if prime_assembly_mode not in {"additive", "sum", "euler_product", "product"}:
+        raise ValueError("prime_assembly_mode must be one of: additive, euler_product")
+
     K_s = np.zeros((N, N), dtype=np.complex128)
     K_1ms = np.zeros((N, N), dtype=np.complex128)
-    for p in primes:
-        Tp = _sym(hecke_Tn(int(p), hecke_params))
-        Tp = _normalize_operator(Tp, method=generator_norm, target=generator_norm_target)
-        K_s = K_s + eps_prime(int(p), s) * Tp
-        K_1ms = K_1ms + eps_prime(int(p), (1.0 - s)) * Tp
+    if prime_assembly_mode in {"additive", "sum"}:
+        for p in primes:
+            if Tp_comm is None:
+                Tp = _sym(hecke_Tn(int(p), hecke_params))
+                Tp = _normalize_operator(Tp, method=generator_norm, target=generator_norm_target)
+            else:
+                Tp = Tp_comm[int(p)]
+
+            K_s = K_s + eps_prime(int(p), s, mode=str(eps_prime_mode)) * Tp
+            K_1ms = K_1ms + eps_prime(int(p), (1.0 - s), mode=str(eps_prime_mode)) * Tp
+    else:
+        I = np.eye(N, dtype=np.complex128)
+        P_s = I.copy()
+        P_1ms = I.copy()
+        for p in primes:
+            if Tp_comm is None:
+                Tp = _sym(hecke_Tn(int(p), hecke_params))
+                Tp = _normalize_operator(Tp, method=generator_norm, target=generator_norm_target)
+            else:
+                Tp = Tp_comm[int(p)]
+
+            wp_s = eps_prime(int(p), s, mode=str(eps_prime_mode))
+            wp_1ms = eps_prime(int(p), (1.0 - s), mode=str(eps_prime_mode))
+            P_s = (P_s @ np.linalg.inv(I - wp_s * Tp)).astype(np.complex128)
+            P_1ms = (P_1ms @ np.linalg.inv(I - wp_1ms * Tp)).astype(np.complex128)
+        K_s = (P_s - I).astype(np.complex128)
+        K_1ms = (P_1ms - I).astype(np.complex128)
 
     comps_list: list[int] = []
     if comps:

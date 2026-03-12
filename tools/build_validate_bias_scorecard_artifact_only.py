@@ -17,7 +17,8 @@ import pandas as pd
 # ---------- Core thresholds ----------
 
 
-SELECTOR_VERSION = "selector_v1"
+SELECTOR_VERSION_DEFAULT = "selector_v1"
+SELECTOR_VERSION_CHOICES = ["selector_v1", "selector_v2"]
 
 
 @dataclass(frozen=True)
@@ -59,7 +60,73 @@ WANT_COLS = [
     "lam_match_cost",
     "dlog_abs",
     "darg",
+    # Optional spectral/operator-identity diagnostics (present in some experiment outputs).
+    "err_FE",
+    "err_FE_scaled",
+    "unitarity_err",
+    "unitarity_err_matrix",
+    "unitarity_S",
+    "hermitian_err",
+    "hermitian_Lam",
 ]
+
+
+def _pick_first_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
+def _finite_stats_num(x: pd.Series | None) -> dict[str, float]:
+    if x is None:
+        return {"p50": float("nan"), "p90": float("nan"), "min": float("nan"), "n": 0.0}
+    a = pd.to_numeric(x, errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return {"p50": float("nan"), "p90": float("nan"), "min": float("nan"), "n": 0.0}
+    return {
+        "p50": float(np.nanpercentile(a, 50)),
+        "p90": float(np.nanpercentile(a, 90)),
+        "min": float(np.nanmin(a)),
+        "n": float(int(a.size)),
+    }
+
+
+def _log10p1_nonneg(v: float) -> float:
+    if not math.isfinite(float(v)):
+        return float("nan")
+    vv = float(v)
+    if vv < 0.0:
+        vv = 0.0
+    return float(np.log10(1.0 + vv))
+
+
+def _finite_median_num(x: pd.Series | None) -> float:
+    if x is None:
+        return float("nan")
+    a = pd.to_numeric(x, errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return float("nan")
+    return float(np.nanmedian(a))
+
+
+def _finite_best_t_by_dlog(df: pd.DataFrame, *, mask: pd.Series) -> float:
+    if df.empty or ("t" not in df.columns) or ("dlog_abs" not in df.columns):
+        return float("nan")
+    try:
+        tt = pd.to_numeric(df.loc[mask, "t"], errors="coerce")
+        dd = pd.to_numeric(df.loc[mask, "dlog_abs"], errors="coerce")
+        ok = np.isfinite(tt.to_numpy(dtype=float, na_value=np.nan)) & np.isfinite(dd.to_numpy(dtype=float, na_value=np.nan))
+        if not ok.any():
+            return float("nan")
+        tt2 = tt.to_numpy(dtype=float)[ok]
+        dd2 = dd.to_numpy(dtype=float)[ok]
+        j = int(np.nanargmin(dd2))
+        return float(tt2[j])
+    except Exception:
+        return float("nan")
 
 
 def _coerce_num(s: pd.Series | None) -> pd.Series:
@@ -519,6 +586,191 @@ def _obs_metrics(
     mirror = _mirror_sigma_stats(df, tier01=tier01, sigma_center=float(sigma_center_eff))
     mirror["mirror_sigma_center_used"] = float(sigma_center_eff)
 
+    # Optional operator-identity diagnostics. These are not required for selector_v1
+    # but are used by selector_v2 when present.
+    fe_col = _pick_first_col(df, ["err_FE_scaled", "err_FE"])
+    unit_col = _pick_first_col(df, ["unitarity_err_matrix", "unitarity_err", "unitarity_S"])
+    herm_col = _pick_first_col(df, ["hermitian_err", "hermitian_Lam"])
+
+    fe_stats = _finite_stats_num(df.loc[tier01, fe_col] if (fe_col is not None and (not df.empty)) else None)
+    unit_stats = _finite_stats_num(df.loc[tier01, unit_col] if (unit_col is not None and (not df.empty)) else None)
+    herm_stats = _finite_stats_num(df.loc[tier01, herm_col] if (herm_col is not None and (not df.empty)) else None)
+
+    # ---- Continuation-consistency diagnostics (cheap analytic continuation proxy) ----
+    # Split Tier01 points into two halves in t and in sigma, compare robust summaries.
+    # Lower residual => more continuation-consistent.
+    cont_t_n_min = 0
+    cont_sigma_n_min = 0
+    cont_t_dlog_med_absdiff = float("nan")
+    cont_t_bestt_absdiff = float("nan")
+    cont_t_fe_log10p1_med_absdiff = float("nan")
+    cont_t_unit_log10p1_med_absdiff = float("nan")
+    cont_t_herm_log10p1_med_absdiff = float("nan")
+    cont_sigma_dlog_med_absdiff = float("nan")
+    cont_sigma_fe_log10p1_med_absdiff = float("nan")
+    cont_sigma_unit_log10p1_med_absdiff = float("nan")
+    cont_sigma_herm_log10p1_med_absdiff = float("nan")
+
+    # Multi-scale continuation: quartile splits (harder for smooth impostors to fake).
+    cont_t_q_n_min = 0
+    cont_t_q_dlog_med_absdiff = float("nan")
+    cont_t_q_bestt_absdiff = float("nan")
+    cont_t_q_fe_log10p1_med_absdiff = float("nan")
+    cont_t_q_unit_log10p1_med_absdiff = float("nan")
+    cont_t_q_herm_log10p1_med_absdiff = float("nan")
+    cont_sigma_q_n_min = 0
+    cont_sigma_q_dlog_med_absdiff = float("nan")
+    cont_sigma_q_fe_log10p1_med_absdiff = float("nan")
+    cont_sigma_q_unit_log10p1_med_absdiff = float("nan")
+    cont_sigma_q_herm_log10p1_med_absdiff = float("nan")
+
+    try:
+        t_t01 = pd.to_numeric(df.loc[tier01, "t"], errors="coerce") if ("t" in df.columns) else pd.Series([], dtype=float)
+        sig_t01 = pd.to_numeric(df.loc[tier01, "sigma"], errors="coerce") if ("sigma" in df.columns) else pd.Series([], dtype=float)
+
+        def _adj_max_absdiff(vals: list[float]) -> float:
+            diffs: list[float] = []
+            for a, b in zip(vals, vals[1:]):
+                if math.isfinite(float(a)) and math.isfinite(float(b)):
+                    diffs.append(abs(float(a) - float(b)))
+            return float(max(diffs)) if diffs else float("nan")
+
+        # t split
+        if not t_t01.empty:
+            tvals_t01 = t_t01[np.isfinite(t_t01.to_numpy(dtype=float, na_value=np.nan))]
+            if len(tvals_t01) >= 8:
+                t_mid = float(np.nanmedian(tvals_t01.to_numpy(dtype=float)))
+                left = tier01 & (pd.to_numeric(df.get("t"), errors="coerce") <= t_mid)
+                right = tier01 & (pd.to_numeric(df.get("t"), errors="coerce") > t_mid)
+                nl = int(left.sum())
+                nr = int(right.sum())
+                cont_t_n_min = int(min(nl, nr))
+                if cont_t_n_min >= 3:
+                    dlog_l = _finite_median_num(df.loc[left, "dlog_abs"] if "dlog_abs" in df.columns else None)
+                    dlog_r = _finite_median_num(df.loc[right, "dlog_abs"] if "dlog_abs" in df.columns else None)
+                    if math.isfinite(dlog_l) and math.isfinite(dlog_r):
+                        cont_t_dlog_med_absdiff = float(abs(dlog_l - dlog_r))
+
+                    bt_l = _finite_best_t_by_dlog(df, mask=left)
+                    bt_r = _finite_best_t_by_dlog(df, mask=right)
+                    if math.isfinite(bt_l) and math.isfinite(bt_r):
+                        cont_t_bestt_absdiff = float(abs(bt_l - bt_r))
+
+                    if fe_col is not None:
+                        fe_l = _finite_median_num(df.loc[left, fe_col])
+                        fe_r = _finite_median_num(df.loc[right, fe_col])
+                        if math.isfinite(fe_l) and math.isfinite(fe_r):
+                            cont_t_fe_log10p1_med_absdiff = float(abs(_log10p1_nonneg(fe_l) - _log10p1_nonneg(fe_r)))
+
+                    if unit_col is not None:
+                        u_l = _finite_median_num(df.loc[left, unit_col])
+                        u_r = _finite_median_num(df.loc[right, unit_col])
+                        if math.isfinite(u_l) and math.isfinite(u_r):
+                            cont_t_unit_log10p1_med_absdiff = float(abs(_log10p1_nonneg(u_l) - _log10p1_nonneg(u_r)))
+
+                    if herm_col is not None:
+                        h_l = _finite_median_num(df.loc[left, herm_col])
+                        h_r = _finite_median_num(df.loc[right, herm_col])
+                        if math.isfinite(h_l) and math.isfinite(h_r):
+                            cont_t_herm_log10p1_med_absdiff = float(abs(_log10p1_nonneg(h_l) - _log10p1_nonneg(h_r)))
+
+            # t quartiles
+            if len(tvals_t01) >= 12:
+                q1, q2, q3 = [float(x) for x in np.nanpercentile(tvals_t01.to_numpy(dtype=float), [25, 50, 75])]
+                t_all = pd.to_numeric(df.get("t"), errors="coerce")
+                qmask = [
+                    tier01 & (t_all <= q1),
+                    tier01 & (t_all > q1) & (t_all <= q2),
+                    tier01 & (t_all > q2) & (t_all <= q3),
+                    tier01 & (t_all > q3),
+                ]
+                counts = [int(m.sum()) for m in qmask]
+                cont_t_q_n_min = int(min(counts)) if counts else 0
+                if cont_t_q_n_min >= 3:
+                    dlog_q = [
+                        _finite_median_num(df.loc[m, "dlog_abs"] if "dlog_abs" in df.columns else None)
+                        for m in qmask
+                    ]
+                    cont_t_q_dlog_med_absdiff = _adj_max_absdiff(dlog_q)
+
+                    bt_q = [_finite_best_t_by_dlog(df, mask=m) for m in qmask]
+                    cont_t_q_bestt_absdiff = _adj_max_absdiff(bt_q)
+
+                    if fe_col is not None:
+                        fe_q = [_log10p1_nonneg(_finite_median_num(df.loc[m, fe_col])) for m in qmask]
+                        cont_t_q_fe_log10p1_med_absdiff = _adj_max_absdiff(fe_q)
+                    if unit_col is not None:
+                        u_q = [_log10p1_nonneg(_finite_median_num(df.loc[m, unit_col])) for m in qmask]
+                        cont_t_q_unit_log10p1_med_absdiff = _adj_max_absdiff(u_q)
+                    if herm_col is not None:
+                        h_q = [_log10p1_nonneg(_finite_median_num(df.loc[m, herm_col])) for m in qmask]
+                        cont_t_q_herm_log10p1_med_absdiff = _adj_max_absdiff(h_q)
+
+        # sigma split
+        if not sig_t01.empty:
+            svals = sig_t01[np.isfinite(sig_t01.to_numpy(dtype=float, na_value=np.nan))]
+            if len(svals) >= 8:
+                s_mid = float(np.nanmedian(svals.to_numpy(dtype=float)))
+                low = tier01 & (pd.to_numeric(df.get("sigma"), errors="coerce") <= s_mid)
+                high = tier01 & (pd.to_numeric(df.get("sigma"), errors="coerce") > s_mid)
+                nl = int(low.sum())
+                nh = int(high.sum())
+                cont_sigma_n_min = int(min(nl, nh))
+                if cont_sigma_n_min >= 3:
+                    dlog_l = _finite_median_num(df.loc[low, "dlog_abs"] if "dlog_abs" in df.columns else None)
+                    dlog_h = _finite_median_num(df.loc[high, "dlog_abs"] if "dlog_abs" in df.columns else None)
+                    if math.isfinite(dlog_l) and math.isfinite(dlog_h):
+                        cont_sigma_dlog_med_absdiff = float(abs(dlog_l - dlog_h))
+
+                    if fe_col is not None:
+                        fe_l = _finite_median_num(df.loc[low, fe_col])
+                        fe_h = _finite_median_num(df.loc[high, fe_col])
+                        if math.isfinite(fe_l) and math.isfinite(fe_h):
+                            cont_sigma_fe_log10p1_med_absdiff = float(abs(_log10p1_nonneg(fe_l) - _log10p1_nonneg(fe_h)))
+
+                    if unit_col is not None:
+                        u_l = _finite_median_num(df.loc[low, unit_col])
+                        u_h = _finite_median_num(df.loc[high, unit_col])
+                        if math.isfinite(u_l) and math.isfinite(u_h):
+                            cont_sigma_unit_log10p1_med_absdiff = float(abs(_log10p1_nonneg(u_l) - _log10p1_nonneg(u_h)))
+
+                    if herm_col is not None:
+                        h_l = _finite_median_num(df.loc[low, herm_col])
+                        h_h = _finite_median_num(df.loc[high, herm_col])
+                        if math.isfinite(h_l) and math.isfinite(h_h):
+                            cont_sigma_herm_log10p1_med_absdiff = float(abs(_log10p1_nonneg(h_l) - _log10p1_nonneg(h_h)))
+
+            # sigma quartiles
+            if len(svals) >= 12:
+                q1, q2, q3 = [float(x) for x in np.nanpercentile(svals.to_numpy(dtype=float), [25, 50, 75])]
+                s_all = pd.to_numeric(df.get("sigma"), errors="coerce")
+                qmask = [
+                    tier01 & (s_all <= q1),
+                    tier01 & (s_all > q1) & (s_all <= q2),
+                    tier01 & (s_all > q2) & (s_all <= q3),
+                    tier01 & (s_all > q3),
+                ]
+                counts = [int(m.sum()) for m in qmask]
+                cont_sigma_q_n_min = int(min(counts)) if counts else 0
+                if cont_sigma_q_n_min >= 3:
+                    dlog_q = [
+                        _finite_median_num(df.loc[m, "dlog_abs"] if "dlog_abs" in df.columns else None)
+                        for m in qmask
+                    ]
+                    cont_sigma_q_dlog_med_absdiff = _adj_max_absdiff(dlog_q)
+
+                    if fe_col is not None:
+                        fe_q = [_log10p1_nonneg(_finite_median_num(df.loc[m, fe_col])) for m in qmask]
+                        cont_sigma_q_fe_log10p1_med_absdiff = _adj_max_absdiff(fe_q)
+                    if unit_col is not None:
+                        u_q = [_log10p1_nonneg(_finite_median_num(df.loc[m, unit_col])) for m in qmask]
+                        cont_sigma_q_unit_log10p1_med_absdiff = _adj_max_absdiff(u_q)
+                    if herm_col is not None:
+                        h_q = [_log10p1_nonneg(_finite_median_num(df.loc[m, herm_col])) for m in qmask]
+                        cont_sigma_q_herm_log10p1_med_absdiff = _adj_max_absdiff(h_q)
+    except Exception:
+        pass
+
     return {
         "file": str(aug_csv),
         "points": n_total,
@@ -545,6 +797,46 @@ def _obs_metrics(
         "best_t_strict_by_dlog": float(best_t_strict),
         "best_sigma_tier01_by_dlog": float(best_sigma_tier01),
         "best_sigma_strict_by_dlog": float(best_sigma_strict),
+        "spec_fe_col": fe_col,
+        "spec_unitarity_col": unit_col,
+        "spec_hermitian_col": herm_col,
+        "spec_fe_p50_tier01": float(fe_stats["p50"]),
+        "spec_fe_p90_tier01": float(fe_stats["p90"]),
+        "spec_fe_min_tier01": float(fe_stats["min"]),
+        "spec_fe_n_tier01": float(fe_stats["n"]),
+        "spec_fe_log10p1_p50_tier01": _log10p1_nonneg(float(fe_stats["p50"])),
+        "spec_unitarity_p50_tier01": float(unit_stats["p50"]),
+        "spec_unitarity_p90_tier01": float(unit_stats["p90"]),
+        "spec_unitarity_min_tier01": float(unit_stats["min"]),
+        "spec_unitarity_n_tier01": float(unit_stats["n"]),
+        "spec_unitarity_log10p1_p50_tier01": _log10p1_nonneg(float(unit_stats["p50"])),
+        "spec_hermitian_p50_tier01": float(herm_stats["p50"]),
+        "spec_hermitian_p90_tier01": float(herm_stats["p90"]),
+        "spec_hermitian_min_tier01": float(herm_stats["min"]),
+        "spec_hermitian_n_tier01": float(herm_stats["n"]),
+        "spec_hermitian_log10p1_p50_tier01": _log10p1_nonneg(float(herm_stats["p50"])),
+        "cont_t_n_min_tier01": float(cont_t_n_min),
+        "cont_t_dlog_med_absdiff": float(cont_t_dlog_med_absdiff),
+        "cont_t_bestt_absdiff": float(cont_t_bestt_absdiff),
+        "cont_t_fe_log10p1_med_absdiff": float(cont_t_fe_log10p1_med_absdiff),
+        "cont_t_unitarity_log10p1_med_absdiff": float(cont_t_unit_log10p1_med_absdiff),
+        "cont_t_hermitian_log10p1_med_absdiff": float(cont_t_herm_log10p1_med_absdiff),
+        "cont_t_q_n_min_tier01": float(cont_t_q_n_min),
+        "cont_t_q_dlog_med_absdiff": float(cont_t_q_dlog_med_absdiff),
+        "cont_t_q_bestt_absdiff": float(cont_t_q_bestt_absdiff),
+        "cont_t_q_fe_log10p1_med_absdiff": float(cont_t_q_fe_log10p1_med_absdiff),
+        "cont_t_q_unitarity_log10p1_med_absdiff": float(cont_t_q_unit_log10p1_med_absdiff),
+        "cont_t_q_hermitian_log10p1_med_absdiff": float(cont_t_q_herm_log10p1_med_absdiff),
+        "cont_sigma_n_min_tier01": float(cont_sigma_n_min),
+        "cont_sigma_dlog_med_absdiff": float(cont_sigma_dlog_med_absdiff),
+        "cont_sigma_fe_log10p1_med_absdiff": float(cont_sigma_fe_log10p1_med_absdiff),
+        "cont_sigma_unitarity_log10p1_med_absdiff": float(cont_sigma_unit_log10p1_med_absdiff),
+        "cont_sigma_hermitian_log10p1_med_absdiff": float(cont_sigma_herm_log10p1_med_absdiff),
+        "cont_sigma_q_n_min_tier01": float(cont_sigma_q_n_min),
+        "cont_sigma_q_dlog_med_absdiff": float(cont_sigma_q_dlog_med_absdiff),
+        "cont_sigma_q_fe_log10p1_med_absdiff": float(cont_sigma_q_fe_log10p1_med_absdiff),
+        "cont_sigma_q_unitarity_log10p1_med_absdiff": float(cont_sigma_q_unit_log10p1_med_absdiff),
+        "cont_sigma_q_hermitian_log10p1_med_absdiff": float(cont_sigma_q_herm_log10p1_med_absdiff),
         **mirror,
         "min_dlog_abs_tier01": _min_finite(dlog[tier01]),
         "min_darg_tier01": _min_finite(darg[tier01]),
@@ -853,7 +1145,16 @@ def main() -> None:
 
     ap.add_argument("--out_prefix", default="_bias_scorecard_v2")
 
+    ap.add_argument(
+        "--selector_version",
+        default=SELECTOR_VERSION_DEFAULT,
+        choices=SELECTOR_VERSION_CHOICES,
+        help="Which selector spec/scoring variant to emit (selector_v1 is frozen; selector_v2 adds spectral identity features when available).",
+    )
+
     args = ap.parse_args()
+
+    selector_version = str(args.selector_version)
 
     run_dir = Path(args.run_dir)
     if not run_dir.exists():
@@ -1308,6 +1609,63 @@ def main() -> None:
     df["sigma_any_median_all"] = df.apply(lambda r: _row_nanmedian(r, sig_cols_any), axis=1) if sig_cols_any else float("nan")
     df["median_dlog_abs_tier01_any"] = df.apply(lambda r: _row_nanmedian(r, dlog_cols_any), axis=1) if dlog_cols_any else float("nan")
 
+    # Coalesce optional spectral identity diagnostics across available observables.
+    fe_cols_any = [c for c in df.columns if isinstance(c, str) and c.endswith("_spec_fe_log10p1_p50_tier01")]
+    unit_cols_any = [c for c in df.columns if isinstance(c, str) and c.endswith("_spec_unitarity_log10p1_p50_tier01")]
+    herm_cols_any = [c for c in df.columns if isinstance(c, str) and c.endswith("_spec_hermitian_log10p1_p50_tier01")]
+    df["spec_fe_log10p1_p50_tier01_any"] = df.apply(lambda r: _row_nanmedian(r, fe_cols_any), axis=1) if fe_cols_any else float("nan")
+    df["spec_unitarity_log10p1_p50_tier01_any"] = df.apply(lambda r: _row_nanmedian(r, unit_cols_any), axis=1) if unit_cols_any else float("nan")
+    df["spec_hermitian_log10p1_p50_tier01_any"] = df.apply(lambda r: _row_nanmedian(r, herm_cols_any), axis=1) if herm_cols_any else float("nan")
+
+    # Coalesce optional spectral identity support counts (max across observables).
+    fe_n_cols = [c for c in df.columns if isinstance(c, str) and c.endswith("_spec_fe_n_tier01")]
+    unit_n_cols = [c for c in df.columns if isinstance(c, str) and c.endswith("_spec_unitarity_n_tier01")]
+    herm_n_cols = [c for c in df.columns if isinstance(c, str) and c.endswith("_spec_hermitian_n_tier01")]
+
+    def _row_nanmax(r: pd.Series, cols: list[str]) -> float:
+        vals: list[float] = []
+        for c in cols:
+            if c in r and math.isfinite(float(r[c])):
+                vals.append(float(r[c]))
+        if not vals:
+            return float("nan")
+        return float(np.nanmax(np.array(vals, dtype=float)))
+
+    df["spec_fe_n_tier01_any"] = df.apply(lambda r: _row_nanmax(r, fe_n_cols), axis=1) if fe_n_cols else float("nan")
+    df["spec_unitarity_n_tier01_any"] = df.apply(lambda r: _row_nanmax(r, unit_n_cols), axis=1) if unit_n_cols else float("nan")
+    df["spec_hermitian_n_tier01_any"] = df.apply(lambda r: _row_nanmax(r, herm_n_cols), axis=1) if herm_n_cols else float("nan")
+
+    # Coalesce continuation features across observables.
+    cont_cols = {
+        "cont_t_n_min_tier01_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_t_n_min_tier01")],
+        "cont_sigma_n_min_tier01_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_sigma_n_min_tier01")],
+        "cont_t_dlog_med_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_t_dlog_med_absdiff")],
+        "cont_t_bestt_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_t_bestt_absdiff")],
+        "cont_t_fe_log10p1_med_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_t_fe_log10p1_med_absdiff")],
+        "cont_t_unitarity_log10p1_med_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_t_unitarity_log10p1_med_absdiff")],
+        "cont_t_hermitian_log10p1_med_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_t_hermitian_log10p1_med_absdiff")],
+        "cont_t_q_n_min_tier01_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_t_q_n_min_tier01")],
+        "cont_t_q_dlog_med_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_t_q_dlog_med_absdiff")],
+        "cont_t_q_bestt_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_t_q_bestt_absdiff")],
+        "cont_t_q_fe_log10p1_med_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_t_q_fe_log10p1_med_absdiff")],
+        "cont_t_q_unitarity_log10p1_med_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_t_q_unitarity_log10p1_med_absdiff")],
+        "cont_t_q_hermitian_log10p1_med_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_t_q_hermitian_log10p1_med_absdiff")],
+        "cont_sigma_dlog_med_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_sigma_dlog_med_absdiff")],
+        "cont_sigma_fe_log10p1_med_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_sigma_fe_log10p1_med_absdiff")],
+        "cont_sigma_unitarity_log10p1_med_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_sigma_unitarity_log10p1_med_absdiff")],
+        "cont_sigma_hermitian_log10p1_med_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_sigma_hermitian_log10p1_med_absdiff")],
+        "cont_sigma_q_n_min_tier01_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_sigma_q_n_min_tier01")],
+        "cont_sigma_q_dlog_med_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_sigma_q_dlog_med_absdiff")],
+        "cont_sigma_q_fe_log10p1_med_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_sigma_q_fe_log10p1_med_absdiff")],
+        "cont_sigma_q_unitarity_log10p1_med_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_sigma_q_unitarity_log10p1_med_absdiff")],
+        "cont_sigma_q_hermitian_log10p1_med_absdiff_any": [c for c in df.columns if isinstance(c, str) and c.endswith("_cont_sigma_q_hermitian_log10p1_med_absdiff")],
+    }
+    for out_col, cols in cont_cols.items():
+        if out_col.endswith("_n_min_tier01_any"):
+            df[out_col] = df.apply(lambda r: _row_nanmax(r, cols), axis=1) if cols else float("nan")
+        else:
+            df[out_col] = df.apply(lambda r: _row_nanmedian(r, cols), axis=1) if cols else float("nan")
+
     # Sigma-family mirror proxies across cases sharing a window signature (sigma-stripped).
     # This intentionally does NOT depend on an observable token in filenames.
     sig_any = pd.to_numeric(df.get("sigma_any_median_all"), errors="coerce").to_numpy(dtype=float, na_value=np.nan)
@@ -1705,6 +2063,80 @@ def main() -> None:
         & (_cb <= 0.0)
     ).fillna(False).astype(bool)
 
+    # Spectral/operator identity features (optional): treat missing as worse (fill with observed max when available)
+    # so rows without diagnostics don't float upward in selector_v2.
+    spectral_cols = [
+        "spec_fe_log10p1_p50_tier01_any",
+        "spec_unitarity_log10p1_p50_tier01_any",
+        "spec_hermitian_log10p1_p50_tier01_any",
+    ]
+    spectral_available = pd.Series(False, index=basket.index, dtype=bool)
+    for col in spectral_cols:
+        raw = pd.to_numeric(
+            basket.get(col, pd.Series([float("nan")] * len(basket), index=basket.index)),
+            errors="coerce",
+        )
+        spectral_available |= raw.notna().fillna(False)
+
+        s = raw
+        if s.notna().any():
+            s = s.fillna(float(s.max()))
+        else:
+            s = s.fillna(0.0)
+        basket[col] = s
+
+    basket["spectral_available"] = spectral_available.fillna(False).astype(bool)
+
+    # Continuation feature columns: treat missing as worse (fill with observed max).
+    continuation_cols = [
+        "cont_t_dlog_med_absdiff_any",
+        "cont_t_bestt_absdiff_any",
+        "cont_t_fe_log10p1_med_absdiff_any",
+        "cont_t_unitarity_log10p1_med_absdiff_any",
+        "cont_t_hermitian_log10p1_med_absdiff_any",
+        "cont_t_q_dlog_med_absdiff_any",
+        "cont_t_q_bestt_absdiff_any",
+        "cont_t_q_fe_log10p1_med_absdiff_any",
+        "cont_t_q_unitarity_log10p1_med_absdiff_any",
+        "cont_t_q_hermitian_log10p1_med_absdiff_any",
+        "cont_sigma_dlog_med_absdiff_any",
+        "cont_sigma_fe_log10p1_med_absdiff_any",
+        "cont_sigma_unitarity_log10p1_med_absdiff_any",
+        "cont_sigma_hermitian_log10p1_med_absdiff_any",
+        "cont_sigma_q_dlog_med_absdiff_any",
+        "cont_sigma_q_fe_log10p1_med_absdiff_any",
+        "cont_sigma_q_unitarity_log10p1_med_absdiff_any",
+        "cont_sigma_q_hermitian_log10p1_med_absdiff_any",
+    ]
+    cont_available = pd.Series(False, index=basket.index, dtype=bool)
+    for col in continuation_cols:
+        raw = pd.to_numeric(
+            basket.get(col, pd.Series([float("nan")] * len(basket), index=basket.index)),
+            errors="coerce",
+        )
+        cont_available |= raw.notna().fillna(False)
+        s = raw
+        if s.notna().any():
+            s = s.fillna(float(s.max()))
+        else:
+            s = s.fillna(0.0)
+        basket[col] = s
+    basket["continuation_available"] = cont_available.fillna(False).astype(bool)
+
+    # Identity support regime flags.
+    fe_avail = pd.to_numeric(basket.get("spec_fe_n_tier01_any"), errors="coerce").fillna(0.0) > 0.0
+    unit_avail = pd.to_numeric(basket.get("spec_unitarity_n_tier01_any"), errors="coerce").fillna(0.0) > 0.0
+    herm_avail = pd.to_numeric(basket.get("spec_hermitian_n_tier01_any"), errors="coerce").fillna(0.0) > 0.0
+    basket["identity_regime"] = np.where(
+        fe_avail & unit_avail,
+        "FE+unitarity",
+        np.where(
+            fe_avail,
+            "FE-only",
+            np.where(unit_avail, "unitarity-only", np.where(herm_avail, "hermitian-only", "none")),
+        ),
+    )
+
     # Structure score weights.
     w_struct = {
         "dead_penalty": -4.0,
@@ -1750,15 +2182,58 @@ def main() -> None:
         "smoothness_trap": -1.0,
     }
 
+    # Spectral/operator-identity score (selector_v2 only): lower residuals are better.
+    w_spec = {
+        "dead_penalty": -4.0,
+        "spec_fe_log10p1_p50_tier01_any": -1.2,
+        "spec_unitarity_log10p1_p50_tier01_any": -1.0,
+        "spec_hermitian_log10p1_p50_tier01_any": -0.8,
+        "fixed_gauge_num": 0.2,
+        "smoothness_trap": -0.5,
+    }
+
+    # Continuation score (selector_v2 only): lower continuation residuals are better.
+    # Keep this block separate from zeta proxies and spectral identity.
+    w_cont = {
+        "dead_penalty": -4.0,
+        "cont_t_dlog_med_absdiff_any": -1.0,
+        "cont_t_bestt_absdiff_any": -0.4,
+        "cont_sigma_dlog_med_absdiff_any": -0.8,
+        "cont_t_fe_log10p1_med_absdiff_any": -0.8,
+        "cont_sigma_fe_log10p1_med_absdiff_any": -0.6,
+        "cont_t_unitarity_log10p1_med_absdiff_any": -0.7,
+        "cont_sigma_unitarity_log10p1_med_absdiff_any": -0.5,
+        "cont_t_q_dlog_med_absdiff_any": -0.8,
+        "cont_t_q_bestt_absdiff_any": -0.2,
+        "cont_t_q_fe_log10p1_med_absdiff_any": -0.6,
+        "cont_t_q_unitarity_log10p1_med_absdiff_any": -0.5,
+        "cont_sigma_q_dlog_med_absdiff_any": -0.6,
+        "cont_sigma_q_fe_log10p1_med_absdiff_any": -0.4,
+        "cont_sigma_q_unitarity_log10p1_med_absdiff_any": -0.3,
+        "fixed_gauge_num": 0.2,
+        "smoothness_trap": -0.5,
+    }
+
     basket["structure_score"] = _compute_scores(basket, weights=w_struct)
     basket["robustness_score"] = _compute_scores(basket, weights=w_rob)
     basket["zeta_structure_score"] = _compute_scores(basket, weights=w_zeta)
+    if selector_version == "selector_v2":
+        basket["spectral_identity_score"] = _compute_scores(basket, weights=w_spec)
+        basket["continuation_score"] = _compute_scores(basket, weights=w_cont)
+    else:
+        basket["spectral_identity_score"] = float("nan")
+        basket["continuation_score"] = float("nan")
 
     # Mark best_current as the top by (structure+robustness).
+    combo_zeta_coef = 0.5
+    combo_spec_coef = 0.5 if selector_version == "selector_v2" else 0.0
+    combo_cont_coef = 0.3 if selector_version == "selector_v2" else 0.0
     basket["combo"] = (
         pd.to_numeric(basket["structure_score"], errors="coerce").fillna(0.0)
         + pd.to_numeric(basket["robustness_score"], errors="coerce").fillna(0.0)
-        + 0.5 * pd.to_numeric(basket["zeta_structure_score"], errors="coerce").fillna(0.0)
+        + combo_zeta_coef * pd.to_numeric(basket["zeta_structure_score"], errors="coerce").fillna(0.0)
+        + combo_spec_coef * pd.to_numeric(basket.get("spectral_identity_score", 0.0), errors="coerce").fillna(0.0)
+        + combo_cont_coef * pd.to_numeric(basket.get("continuation_score", 0.0), errors="coerce").fillna(0.0)
     )
     best_idx = basket["combo"].idxmax() if len(basket) else None
     if best_idx is not None:
@@ -1768,6 +2243,8 @@ def main() -> None:
     perturb_struct = _weight_perturbation(basket, base_weights=w_struct, n=200, frac=0.2, seed=int(args.seed) + 1)
     perturb_rob = _weight_perturbation(basket, base_weights=w_rob, n=200, frac=0.2, seed=int(args.seed) + 2)
     perturb_zeta = _weight_perturbation(basket, base_weights=w_zeta, n=200, frac=0.2, seed=int(args.seed) + 3)
+    perturb_spec = _weight_perturbation(basket, base_weights=w_spec, n=200, frac=0.2, seed=int(args.seed) + 4) if selector_version == "selector_v2" else {}
+    perturb_cont = _weight_perturbation(basket, base_weights=w_cont, n=200, frac=0.2, seed=int(args.seed) + 5) if selector_version == "selector_v2" else {}
 
     blocks_struct = {
         "drop_overlap": ["overlap_all3_n_num", "overlap_all3_width_num"],
@@ -1797,14 +2274,63 @@ def main() -> None:
         },
     )
 
+    ablate_spec = (
+        _ablation(
+            basket,
+            base_weights=w_spec,
+            blocks={
+                "drop_FE": ["spec_fe_log10p1_p50_tier01_any"],
+                "drop_unitarity": ["spec_unitarity_log10p1_p50_tier01_any"],
+                "drop_hermitian": ["spec_hermitian_log10p1_p50_tier01_any"],
+                "drop_dead_penalty": ["dead_penalty"],
+            },
+        )
+        if selector_version == "selector_v2"
+        else {}
+    )
+
+    ablate_cont = (
+        _ablation(
+            basket,
+            base_weights=w_cont,
+            blocks={
+                "drop_cont_t": [
+                    "cont_t_dlog_med_absdiff_any",
+                    "cont_t_bestt_absdiff_any",
+                    "cont_t_fe_log10p1_med_absdiff_any",
+                    "cont_t_unitarity_log10p1_med_absdiff_any",
+                    "cont_t_q_dlog_med_absdiff_any",
+                    "cont_t_q_bestt_absdiff_any",
+                    "cont_t_q_fe_log10p1_med_absdiff_any",
+                    "cont_t_q_unitarity_log10p1_med_absdiff_any",
+                ],
+                "drop_cont_sigma": [
+                    "cont_sigma_dlog_med_absdiff_any",
+                    "cont_sigma_fe_log10p1_med_absdiff_any",
+                    "cont_sigma_unitarity_log10p1_med_absdiff_any",
+                    "cont_sigma_q_dlog_med_absdiff_any",
+                    "cont_sigma_q_fe_log10p1_med_absdiff_any",
+                    "cont_sigma_q_unitarity_log10p1_med_absdiff_any",
+                ],
+                "drop_dead_penalty": ["dead_penalty"],
+            },
+        )
+        if selector_version == "selector_v2"
+        else {}
+    )
+
     confusion_struct = _confusion_summary(basket, label_col="hand_label", score_col="structure_score")
     confusion_rob = _confusion_summary(basket, label_col="hand_label", score_col="robustness_score")
     confusion_zeta = _confusion_summary(basket, label_col="hand_label", score_col="zeta_structure_score")
+    confusion_spec = _confusion_summary(basket, label_col="hand_label", score_col="spectral_identity_score") if selector_version == "selector_v2" else {}
+    confusion_cont = _confusion_summary(basket, label_col="hand_label", score_col="continuation_score") if selector_version == "selector_v2" else {}
 
     monotonicity = {
         "structure_weights": w_struct,
         "robustness_weights": w_rob,
         "zeta_structure_weights": w_zeta,
+        "spectral_identity_weights": (w_spec if selector_version == "selector_v2" else {}),
+        "continuation_weights": (w_cont if selector_version == "selector_v2" else {}),
         "sanity": {
             "overlap_positive_weight": (w_struct["overlap_all3_n_num"] > 0 and w_rob["overlap_all3_n_num"] > 0),
             "contract_positive_weight": (w_struct["contract_bonus"] > 0),
@@ -1815,6 +2341,11 @@ def main() -> None:
             "sigmafam_mirror_low_support_penalized": (w_zeta["sigmafam_mirror_low_support"] < 0),
             "divisor_shift_penalized": (w_zeta["divisor_best_t_shift_scaled"] < 0),
             "divisor_low_support_penalized": (w_zeta["divisor_low_support"] < 0),
+            "spectral_FE_penalized": (w_spec["spec_fe_log10p1_p50_tier01_any"] < 0),
+            "spectral_unitarity_penalized": (w_spec["spec_unitarity_log10p1_p50_tier01_any"] < 0),
+            "spectral_hermitian_penalized": (w_spec["spec_hermitian_log10p1_p50_tier01_any"] < 0),
+            "continuation_t_resid_penalized": (w_cont["cont_t_dlog_med_absdiff_any"] < 0),
+            "continuation_sigma_resid_penalized": (w_cont["cont_sigma_dlog_med_absdiff_any"] < 0),
         },
     }
 
@@ -1834,17 +2365,42 @@ def main() -> None:
         "n_groups": int(len(groups)),
         "n_scored": int(len(df)),
         "n_basket": int(len(basket)),
-        "weights": {"structure": w_struct, "robustness": w_rob, "zeta_structure": w_zeta},
-        "weight_perturbation": {"structure": perturb_struct, "robustness": perturb_rob, "zeta_structure": perturb_zeta},
-        "ablation": {"structure": ablate_struct, "robustness": ablate_rob, "zeta_structure": ablate_zeta},
+        "weights": {
+            "structure": w_struct,
+            "robustness": w_rob,
+            "zeta_structure": w_zeta,
+            "spectral_identity": (w_spec if selector_version == "selector_v2" else {}),
+            "continuation": (w_cont if selector_version == "selector_v2" else {}),
+        },
+        "weight_perturbation": {
+            "structure": perturb_struct,
+            "robustness": perturb_rob,
+            "zeta_structure": perturb_zeta,
+            "spectral_identity": perturb_spec,
+            "continuation": perturb_cont,
+        },
+        "ablation": {
+            "structure": ablate_struct,
+            "robustness": ablate_rob,
+            "zeta_structure": ablate_zeta,
+            "spectral_identity": ablate_spec,
+            "continuation": ablate_cont,
+        },
         "monotonicity": monotonicity,
-        "confusion": {"structure": confusion_struct, "robustness": confusion_rob, "zeta_structure": confusion_zeta},
+        "confusion": {
+            "structure": confusion_struct,
+            "robustness": confusion_rob,
+            "zeta_structure": confusion_zeta,
+            "spectral_identity": confusion_spec,
+            "continuation": confusion_cont,
+        },
         "conclusion": conclusion,
     }
 
-    # ---- Freeze selector spec (selector_v1) ----
-    selector_spec = {
-        "version": str(SELECTOR_VERSION),
+    # ---- Selector spec ----
+    # Keep selector_v1 frozen: do not change its spec shape/keys.
+    selector_spec: dict[str, Any] = {
+        "version": str(selector_version),
         "gate": {
             "gate_tin_inv_max": float(args.gate_tin_inv_max),
             "gate_sep2_min": float(args.gate_sep2_min),
@@ -1864,6 +2420,16 @@ def main() -> None:
             "zeta_structure": list(w_zeta.keys()),
         },
     }
+    if selector_version == "selector_v2":
+        selector_spec["weights"]["spectral_identity"] = w_spec
+        selector_spec["features"]["spectral_identity"] = list(w_spec.keys())
+        selector_spec["weights"]["continuation"] = w_cont
+        selector_spec["features"]["continuation"] = list(w_cont.keys())
+        selector_spec["combo"] = {
+            "zeta_coef": float(combo_zeta_coef),
+            "spectral_coef": float(combo_spec_coef),
+            "continuation_coef": float(combo_cont_coef),
+        }
     selector_hash = hashlib.sha256(json.dumps(selector_spec, sort_keys=True).encode("utf-8")).hexdigest()[:12]
     selector_spec["hash12"] = selector_hash
     payload["selector"] = selector_spec
@@ -1877,8 +2443,10 @@ def main() -> None:
     out_digest_full = out_dir / f"{out_prefix}_case_digest_full.csv"
     out_top10_why = out_dir / f"{out_prefix}_top10_why.csv"
     out_regime = out_dir / f"{out_prefix}_support_regime_summary.csv"
+    out_identity = out_dir / f"{out_prefix}_identity_support_summary.csv"
+    out_cont = out_dir / f"{out_prefix}_continuation_support_summary.csv"
     out_syn = out_dir / f"{out_prefix}_synthetic_smoothness_controls.csv"
-    out_selector = out_dir / f"{out_prefix}_{SELECTOR_VERSION}_spec.json"
+    out_selector = out_dir / f"{out_prefix}_{selector_version}_spec.json"
     out_audit = out_dir / f"{out_prefix}_zeta_proxy_audit.csv"
     out_redundancy = out_dir / f"{out_prefix}_zeta_proxy_redundancy.csv"
 
@@ -1942,8 +2510,44 @@ def main() -> None:
 
     basket.to_csv(out_csv, index=False)
 
+    # ---- Identity/continuation support summaries ----
+    try:
+        ident_counts = dict(basket.get("identity_regime", pd.Series([], dtype=str)).astype(str).value_counts())
+    except Exception:
+        ident_counts = {}
+    try:
+        cont_counts = {
+            "continuation_available": int(pd.to_numeric(basket.get("continuation_available", False), errors="coerce").fillna(False).astype(bool).sum()),
+            "continuation_unavailable": int(len(basket) - int(pd.to_numeric(basket.get("continuation_available", False), errors="coerce").fillna(False).astype(bool).sum())),
+        }
+    except Exception:
+        cont_counts = {}
+
+    payload["identity_support"] = {
+        "counts": ident_counts,
+        "n": int(len(basket)),
+    }
+    payload["continuation_support"] = {
+        "counts": cont_counts,
+        "n": int(len(basket)),
+    }
+
+    if len(basket):
+        try:
+            pd.DataFrame(
+                [{"identity_regime": k, "n": int(v)} for (k, v) in ident_counts.items()]
+            ).to_csv(out_identity, index=False)
+        except Exception:
+            pass
+        try:
+            pd.DataFrame(
+                [{"key": k, "n": int(v)} for (k, v) in cont_counts.items()]
+            ).to_csv(out_cont, index=False)
+        except Exception:
+            pass
+
     # Blind ranking view: top rows by each score without labels.
-    blind_cols = ["case", "structure_score", "robustness_score", "zeta_structure_score", "combo"]
+    blind_cols = ["case", "structure_score", "robustness_score", "zeta_structure_score", "spectral_identity_score", "continuation_score", "combo"]
     blind = basket.copy()
     for c in ["hand_label", "label_provisional"]:
         if c in blind.columns:
@@ -1953,9 +2557,16 @@ def main() -> None:
             blind.sort_values("structure_score", ascending=False)[blind_cols].head(20).assign(rank_by="structure"),
             blind.sort_values("robustness_score", ascending=False)[blind_cols].head(20).assign(rank_by="robustness"),
             blind.sort_values("zeta_structure_score", ascending=False)[blind_cols].head(20).assign(rank_by="zeta_structure"),
+            blind.sort_values("spectral_identity_score", ascending=False)[blind_cols].head(20).assign(rank_by="spectral_identity")
+            if selector_version == "selector_v2"
+            else pd.DataFrame(),
+            blind.sort_values("continuation_score", ascending=False)[blind_cols].head(20).assign(rank_by="continuation")
+            if selector_version == "selector_v2"
+            else pd.DataFrame(),
         ],
         ignore_index=True,
     )
+    out_blind_df = out_blind_df.dropna(subset=["rank_by"]).copy() if "rank_by" in out_blind_df.columns else out_blind_df
     out_blind_df.to_csv(out_blind, index=False)
 
     # ---- Support-regime analysis + top/bottom digest ----
@@ -2056,7 +2667,9 @@ def main() -> None:
     combo_no_anchor = (
         pd.to_numeric(basket.get("structure_score", 0.0), errors="coerce").fillna(0.0)
         + pd.to_numeric(basket.get("robustness_score", 0.0), errors="coerce").fillna(0.0)
-        + 0.5 * pd.to_numeric(zeta_no_anchor, errors="coerce").fillna(0.0)
+        + combo_zeta_coef * pd.to_numeric(zeta_no_anchor, errors="coerce").fillna(0.0)
+        + combo_spec_coef * pd.to_numeric(basket.get("spectral_identity_score", 0.0), errors="coerce").fillna(0.0)
+        + combo_cont_coef * pd.to_numeric(basket.get("continuation_score", 0.0), errors="coerce").fillna(0.0)
     )
     base_rank = pd.to_numeric(basket.get("combo", np.nan), errors="coerce").rank(method="average", ascending=False)
     abl_rank = pd.to_numeric(combo_no_anchor, errors="coerce").rank(method="average", ascending=False)
@@ -2580,7 +3193,7 @@ def main() -> None:
         }
 
     lines = []
-    lines.append(f"Selector: {SELECTOR_VERSION} hash={selector_hash}")
+    lines.append(f"Selector: {selector_version} hash={selector_hash}")
     lines.append(f"Basket rows: {len(basket)} (scored groups: {len(df)}; discovered groups: {len(groups)})")
     lines.append(f"Conclusion: {conclusion}")
     lines.append("")
@@ -2588,6 +3201,12 @@ def main() -> None:
     lines.append(f"  structure: spearman p10={payload['weight_perturbation']['structure']['spearman_rank_corr_p10']:.3f} p50={payload['weight_perturbation']['structure']['spearman_rank_corr_p50']:.3f} top10 jacc p50={payload['weight_perturbation']['structure']['topk_jacc_p50']:.3f}")
     lines.append(f"  robust  : spearman p10={payload['weight_perturbation']['robustness']['spearman_rank_corr_p10']:.3f} p50={payload['weight_perturbation']['robustness']['spearman_rank_corr_p50']:.3f} top10 jacc p50={payload['weight_perturbation']['robustness']['topk_jacc_p50']:.3f}")
     lines.append(f"  zeta    : spearman p10={payload['weight_perturbation']['zeta_structure']['spearman_rank_corr_p10']:.3f} p50={payload['weight_perturbation']['zeta_structure']['spearman_rank_corr_p50']:.3f} top10 jacc p50={payload['weight_perturbation']['zeta_structure']['topk_jacc_p50']:.3f}")
+    if payload.get("weight_perturbation", {}).get("spectral_identity"):
+        sp = payload["weight_perturbation"]["spectral_identity"]
+        lines.append(f"  spectral: spearman p10={sp['spearman_rank_corr_p10']:.3f} p50={sp['spearman_rank_corr_p50']:.3f} top10 jacc p50={sp['topk_jacc_p50']:.3f}")
+    if payload.get("weight_perturbation", {}).get("continuation"):
+        cp = payload["weight_perturbation"]["continuation"]
+        lines.append(f"  cont    : spearman p10={cp['spearman_rank_corr_p10']:.3f} p50={cp['spearman_rank_corr_p50']:.3f} top10 jacc p50={cp['topk_jacc_p50']:.3f}")
     lines.append("")
     lines.append("Ablation (spearman rank corr vs full)")
     for k, v in payload["ablation"]["structure"].items():
@@ -2596,11 +3215,23 @@ def main() -> None:
         lines.append(f"  robust   {k}: {v['spearman_rank_corr']:.3f}")
     for k, v in payload["ablation"]["zeta_structure"].items():
         lines.append(f"  zeta     {k}: {v['spearman_rank_corr']:.3f}")
+    if payload.get("ablation", {}).get("spectral_identity"):
+        for k, v in payload["ablation"]["spectral_identity"].items():
+            lines.append(f"  spectral  {k}: {v['spearman_rank_corr']:.3f}")
+    if payload.get("ablation", {}).get("continuation"):
+        for k, v in payload["ablation"]["continuation"].items():
+            lines.append(f"  cont     {k}: {v['spearman_rank_corr']:.3f}")
     lines.append("")
     lines.append("Confusion (top10 composition)")
     lines.append(f"  structure: dead_in_top10={payload['confusion']['structure']['dead_in_topk']}/{payload['confusion']['structure']['topk']} best_in_top10={payload['confusion']['structure']['best_in_topk']}")
     lines.append(f"  robust  : dead_in_top10={payload['confusion']['robustness']['dead_in_topk']}/{payload['confusion']['robustness']['topk']} best_in_top10={payload['confusion']['robustness']['best_in_topk']}")
     lines.append(f"  zeta    : dead_in_top10={payload['confusion']['zeta_structure']['dead_in_topk']}/{payload['confusion']['zeta_structure']['topk']} best_in_top10={payload['confusion']['zeta_structure']['best_in_topk']}")
+    if payload.get("confusion", {}).get("spectral_identity"):
+        cs = payload["confusion"]["spectral_identity"]
+        lines.append(f"  spectral: dead_in_top10={cs['dead_in_topk']}/{cs['topk']} best_in_top10={cs['best_in_topk']}")
+    if payload.get("confusion", {}).get("continuation"):
+        cc = payload["confusion"]["continuation"]
+        lines.append(f"  cont    : dead_in_top10={cc['dead_in_topk']}/{cc['topk']} best_in_top10={cc['best_in_topk']}")
 
     # ---- Zeta support summary (support-limited vs variance-limited) ----
     def _support_status(*, non_nan: int, nunique: int, std: float, fam_count: int, n: int) -> str:

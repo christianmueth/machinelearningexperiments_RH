@@ -1,0 +1,37 @@
+# Quick Experiment E run to emit boundary samples on a rectangle with right edge at sigma=1.0.
+# Intended for Mangoldt probe on det_rel and logdet(I-S_rel).
+
+experiment: exp_E_doc_validation_track
+run_name: exp_E_mangoldt_detrel_sigma1_quick
+
+# Convergence-only mode
+
+do_convergence_sweep_only: true
+
+# Rectangle: [sigma_min, sigma_max, t_min, t_max]
+# Right boundary is sigma = sigma_max.
+convergence_rect: [0.90, 1.00, 10.0, 30.0]
+
+convergence_n_sigma: 17
+convergence_n_t: 81
+
+# Emit boundary points (needed for Mangoldt probe)
+convergence_emit_boundary_samples: true
+convergence_boundary_samples_out_csv: E_Qlambda_convergence_boundary_samples.csv
+
+# Keep winding disabled; boundary samples should still emit (code patched)
+convergence_do_winding: false
+convergence_wind_n_edge: 1600
+
+# Keep this minimal
+Ns: [64]
+
+# Use the relative scattering observable
+convergence_wind_basis: rel
+conv_block_key: "+"
+
+eta: 3.0
+schur_jitter: 1.0e-9
+cayley_eps: 0.0
+
+# Keep any other defaults from experiment script

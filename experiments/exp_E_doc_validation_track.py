@@ -1046,6 +1046,10 @@ class ModelCfg:
     generator_norm: str | None
     generator_norm_target: float
     weight_k: int
+    eps_prime_mode: str
+    prime_assembly_mode: str
+    generator_packetize_mode: str
+    generator_packetize_basis_mode: str
 
 
 def main() -> int:
@@ -1128,6 +1132,11 @@ def main() -> int:
     if generator_norm is not None:
         generator_norm = str(generator_norm)
     generator_norm_target = float(config.get("generator_norm_target", 1.0))
+
+    eps_prime_mode = str(config.get("eps_prime_mode", "2s-1")).strip()
+    prime_assembly_mode = str(config.get("prime_assembly_mode", "additive")).strip()
+    generator_packetize_mode = str(config.get("generator_packetize_mode", "none")).strip()
+    generator_packetize_basis_mode = str(config.get("generator_packetize_basis_mode", "sum_norm")).strip()
 
     weight_k = int(config.get("weight_k", 0))
 
@@ -1311,6 +1320,261 @@ def main() -> int:
             return (0.5 * (S11 - S12 - S21 + S22)).astype(np.complex128)
         raise ValueError("block must be 'plus' or 'minus'")
 
+    def _riesz_projector(
+        A: np.ndarray,
+        *,
+        center: complex,
+        radius: float,
+        n_theta: int = 32,
+    ) -> np.ndarray:
+        """Numerical Riesz projector (1/2πi)∮(zI-A)^{-1}dz on a circular contour.
+
+        Parameterization: z(θ)=center+radius*e^{iθ}, θ in [0,2π).
+        Then dz = i*radius*e^{iθ} dθ and
+          P = (1/2π)∫ (zI-A)^{-1} * radius*e^{iθ} dθ.
+        """
+
+        A = np.asarray(A, dtype=np.complex128)
+        n = int(A.shape[0])
+        if A.shape != (n, n):
+            raise ValueError("A must be square")
+        radius = float(radius)
+        if not np.isfinite(radius) or radius <= 0:
+            raise ValueError("radius must be finite positive")
+        n_theta = int(max(8, n_theta))
+
+        I = np.eye(n, dtype=np.complex128)
+        thetas = np.linspace(0.0, 2.0 * float(np.pi), n_theta, endpoint=False).astype(float)
+        dtheta = (2.0 * float(np.pi)) / float(n_theta)
+
+        P = np.zeros((n, n), dtype=np.complex128)
+        for th in thetas.tolist():
+            eith = complex(np.cos(th), np.sin(th))
+            z = complex(center + radius * eith)
+            # weight = (dθ/2π) * radius*e^{iθ}
+            w = (dtheta / (2.0 * float(np.pi))) * (radius * eith)
+            try:
+                R = np.linalg.solve((z * I - A), I)
+            except Exception:
+                # If the resolvent solve fails at a quadrature node, bail to NaNs.
+                return np.full((n, n), complex("nan"), dtype=np.complex128)
+            P += (w * R).astype(np.complex128)
+        return P.astype(np.complex128)
+
+    def _proj_diagnostics(A: np.ndarray, P: np.ndarray) -> dict[str, float]:
+        A = np.asarray(A, dtype=np.complex128)
+        P = np.asarray(P, dtype=np.complex128)
+        out: dict[str, float] = {}
+        try:
+            tr = complex(np.trace(P))
+            out["proj_trace_re"] = float(np.real(tr)) if is_finite_complex(tr) else float("nan")
+            out["proj_trace_im"] = float(np.imag(tr)) if is_finite_complex(tr) else float("nan")
+        except Exception:
+            out["proj_trace_re"] = float("nan")
+            out["proj_trace_im"] = float("nan")
+
+        # Relative idempotency defect ||P^2-P||_F / ||P||_F.
+        try:
+            denom = float(np.linalg.norm(P, ord="fro"))
+            num = float(np.linalg.norm((P @ P - P), ord="fro"))
+            out["proj_idem_rel"] = float(num / (denom + 1e-300))
+        except Exception:
+            out["proj_idem_rel"] = float("nan")
+
+        # Relative commutator defect ||AP-PA||_F / (||A||_F||P||_F).
+        try:
+            denomA = float(np.linalg.norm(A, ord="fro"))
+            denomP = float(np.linalg.norm(P, ord="fro"))
+            num = float(np.linalg.norm((A @ P - P @ A), ord="fro"))
+            out["proj_comm_rel"] = float(num / ((denomA + 1e-300) * (denomP + 1e-300)))
+        except Exception:
+            out["proj_comm_rel"] = float("nan")
+
+        return out
+
+    def _cusp_channel_riesz(
+        B: np.ndarray,
+        *,
+        u0: np.ndarray,
+        prefer: complex | None,
+        overlap_floor: float = 0.9,
+        radius_frac: float = 0.45,
+        n_theta: int = 32,
+    ) -> dict[str, object]:
+        """Extract the cusp eigenchannel via overlap selection + Riesz projector.
+
+        - Select candidate eigenvalue by overlap with the constant-mode line span{u0}.
+        - If prefer is finite, break ties by nearest-neighbor to prefer.
+        - Build a Riesz projector using a gap-based contour radius.
+        """
+
+        B = np.asarray(B, dtype=np.complex128)
+        n = int(B.shape[0])
+        if B.shape != (n, n):
+            raise ValueError("B must be square")
+        u0 = np.asarray(u0, dtype=np.complex128).ravel()
+        if u0.size != n:
+            raise ValueError("u0 shape mismatch")
+        nu = float(np.linalg.norm(u0))
+        if not np.isfinite(nu) or nu <= 0:
+            raise ValueError("u0 must be nonzero")
+        u0 = (u0 / nu).astype(np.complex128)
+
+        w, V = np.linalg.eig(B)
+        w = np.asarray(w, dtype=np.complex128).ravel()
+        V = np.asarray(V, dtype=np.complex128)
+        if w.size == 0 or V.size == 0:
+            raise ValueError("no eig data")
+
+        # Overlap score: |<u0,v>| / ||v||.
+        vn = np.sqrt(np.sum(np.abs(V) ** 2, axis=0)).astype(float)
+        vn = np.maximum(vn, 1e-300)
+        overlaps = (np.abs(u0.conj().T @ V) / vn).astype(float)
+        maxov = float(np.max(overlaps)) if overlaps.size else float("nan")
+        if not np.isfinite(maxov):
+            raise ValueError("bad overlaps")
+
+        # Candidate set: start with overlap-thresholded eigenvalues, but always include a few top overlaps.
+        order = np.argsort(-overlaps.astype(float))
+        top_k = int(min(max(3, n // 4), n))
+        cand_top = order[:top_k]
+
+        cand_thr = np.where(overlaps >= float(overlap_floor) * maxov)[0]
+        if cand_thr.size == 0:
+            cand = np.asarray(cand_top, dtype=int)
+        else:
+            cand = np.unique(np.concatenate([cand_thr.astype(int), cand_top.astype(int)])).astype(int)
+
+        if prefer is not None and is_finite_complex(prefer):
+            jpref = int(np.argmin(np.abs(w - complex(prefer)).astype(float)))
+            cand = np.unique(np.concatenate([cand, np.asarray([jpref], dtype=int)])).astype(int)
+
+        # Evaluate candidates by Riesz-projector overlap p0_overlap = ||P u0||^2.
+        best_j: int | None = None
+        best_p0 = -float("inf")
+        best_gap1 = float("nan")
+        best_gap2 = float("nan")
+        best_r = float("nan")
+        best_P: np.ndarray | None = None
+        best_diag: dict[str, float] | None = None
+        best_lam_r = complex("nan")
+
+        cand_records: list[tuple[int, float, float]] = []  # (j, p0_overlap, |w-prefer|)
+        for j0 in cand.tolist():
+            j0 = int(j0)
+            lam0_j = complex(w[j0])
+            diffs_all = np.abs(w - lam0_j).astype(float)
+            diffs_all[j0] = float("inf")
+            diffs_sorted = np.sort(diffs_all[np.isfinite(diffs_all)])
+            gap1_j = float(diffs_sorted[0]) if diffs_sorted.size >= 1 else float("nan")
+            gap2_j = float(diffs_sorted[1]) if diffs_sorted.size >= 2 else float("nan")
+            r_j = float(radius_frac) * float(gap1_j) if np.isfinite(gap1_j) and gap1_j > 0 else float("nan")
+            if not np.isfinite(r_j) or r_j <= 0:
+                continue
+            Pj = _riesz_projector(B, center=lam0_j, radius=r_j, n_theta=int(n_theta))
+            if not np.isfinite(np.real(Pj)).all() or not np.isfinite(np.imag(Pj)).all():
+                continue
+            try:
+                # Use an orthonormal basis for range(Pj) to get a bounded overlap in [0,1].
+                # (Pj itself is typically not Hermitian for non-normal B.)
+                U, S, _ = np.linalg.svd(Pj)
+                S = np.asarray(S, dtype=float).ravel()
+                rnk = int(np.sum(S > 1e-6))
+                if rnk <= 0:
+                    continue
+                Ur = np.asarray(U[:, :rnk], dtype=np.complex128)
+                coeff = (Ur.conj().T @ u0.reshape(-1, 1)).ravel()
+                p0_ov_j = float(np.sum(np.abs(coeff) ** 2))
+            except Exception:
+                continue
+            if not np.isfinite(p0_ov_j):
+                continue
+
+            d_pref = float(abs(lam0_j - complex(prefer))) if (prefer is not None and is_finite_complex(prefer)) else float("inf")
+            cand_records.append((j0, p0_ov_j, d_pref))
+
+            if p0_ov_j > best_p0:
+                best_p0 = float(p0_ov_j)
+                best_j = int(j0)
+                best_gap1 = float(gap1_j)
+                best_gap2 = float(gap2_j)
+                best_r = float(r_j)
+                best_P = Pj
+                best_diag = _proj_diagnostics(B, Pj)
+                try:
+                    trP = complex(np.trace(Pj))
+                    trPB = complex(np.trace(Pj @ B))
+                    best_lam_r = complex(trPB / trP) if is_finite_complex(trPB) and is_finite_complex(trP) and abs(trP) > 1e-12 else complex("nan")
+                except Exception:
+                    best_lam_r = complex("nan")
+
+        if best_j is None or best_P is None or best_diag is None:
+            # Hard fallback: select by overlap (previous behavior) and return NaN projector diagnostics.
+            j = int(order[0])
+            lam0 = complex(w[j])
+            return {
+                "lam_raw": lam0,
+                "lam_riesz": complex("nan"),
+                "gap": float("nan"),
+                "sep2": float("nan"),
+                "overlap_max": maxov,
+                "overlap_sel": float(overlaps[j]) if np.isfinite(overlaps[j]) else float("nan"),
+                "radius": float("nan"),
+                "proj": np.full((n, n), complex("nan"), dtype=np.complex128),
+                "proj_diag": {"proj_trace_re": float("nan"), "proj_trace_im": float("nan"), "proj_idem_rel": float("nan"), "proj_comm_rel": float("nan")},
+                "p0_overlap": float("nan"),
+            }
+
+        # If prefer is provided, and multiple candidates have near-max overlap, pick the one closest to prefer.
+        if prefer is not None and is_finite_complex(prefer) and cand_records:
+            near = [(j0, p0, dp) for (j0, p0, dp) in cand_records if p0 >= 0.98 * best_p0]
+            if near:
+                j2, _, _ = min(near, key=lambda x: x[2])
+                if int(j2) != int(best_j):
+                    # Recompute projector bundle for the preferred near-max candidate.
+                    lam0_j = complex(w[int(j2)])
+                    diffs_all = np.abs(w - lam0_j).astype(float)
+                    diffs_all[int(j2)] = float("inf")
+                    diffs_sorted = np.sort(diffs_all[np.isfinite(diffs_all)])
+                    best_gap1 = float(diffs_sorted[0]) if diffs_sorted.size >= 1 else float("nan")
+                    best_gap2 = float(diffs_sorted[1]) if diffs_sorted.size >= 2 else float("nan")
+                    best_r = float(radius_frac) * float(best_gap1) if np.isfinite(best_gap1) and best_gap1 > 0 else float("nan")
+                    best_P = _riesz_projector(B, center=lam0_j, radius=best_r, n_theta=int(n_theta))
+                    best_diag = _proj_diagnostics(B, best_P)
+                    try:
+                        trP = complex(np.trace(best_P))
+                        trPB = complex(np.trace(best_P @ B))
+                        best_lam_r = complex(trPB / trP) if is_finite_complex(trPB) and is_finite_complex(trP) and abs(trP) > 1e-12 else complex("nan")
+                    except Exception:
+                        best_lam_r = complex("nan")
+                    try:
+                        U, S, _ = np.linalg.svd(best_P)
+                        S = np.asarray(S, dtype=float).ravel()
+                        rnk = int(np.sum(S > 1e-6))
+                        if rnk <= 0:
+                            best_p0 = float("nan")
+                        else:
+                            Ur = np.asarray(U[:, :rnk], dtype=np.complex128)
+                            coeff = (Ur.conj().T @ u0.reshape(-1, 1)).ravel()
+                            best_p0 = float(np.sum(np.abs(coeff) ** 2))
+                    except Exception:
+                        best_p0 = float("nan")
+                    best_j = int(j2)
+
+        lam0 = complex(w[int(best_j)])
+        return {
+            "lam_raw": lam0,
+            "lam_riesz": complex(best_lam_r),
+            "gap": float(best_gap1),
+            "sep2": float(best_gap2),
+            "overlap_max": maxov,
+            "overlap_sel": float(overlaps[int(best_j)]) if np.isfinite(overlaps[int(best_j)]) else float("nan"),
+            "radius": float(best_r),
+            "proj": best_P,
+            "proj_diag": best_diag,
+            "p0_overlap": float(best_p0),
+        }
+
     def _b_from_frac(N: int, *, b0_override: int | None = None, b0_delta: int = 0) -> int:
         N0 = int(N)
         if b0_override is None:
@@ -1366,6 +1630,10 @@ def main() -> int:
             generator_norm=generator_norm,
             generator_norm_target=float(generator_norm_target),
             weight_k=int(weight_k),
+            eps_prime_mode=str(eps_prime_mode),
+            prime_assembly_mode=str(prime_assembly_mode),
+            generator_packetize_mode=str(generator_packetize_mode),
+            generator_packetize_basis_mode=str(generator_packetize_basis_mode),
         )
 
     def _boundary_indices(cfgm: ModelCfg) -> np.ndarray | None:
@@ -1408,6 +1676,10 @@ def main() -> int:
                 generator_norm_target=cfgm.generator_norm_target,
                 completion_mode=cfgm.completion_mode,
                 dual_scale=cfgm.dual_scale,
+                eps_prime_mode=cfgm.eps_prime_mode,
+                prime_assembly_mode=cfgm.prime_assembly_mode,
+                generator_packetize_mode=cfgm.generator_packetize_mode,
+                generator_packetize_basis_mode=cfgm.generator_packetize_basis_mode,
             )
             b0 = int(cfgm.b // 2)
             Lam = dn_map_two_channel_boundary(U, W, b0=b0, jitter=cfgm.jitter)
@@ -1427,6 +1699,10 @@ def main() -> int:
             bulk_mode=str(bulk_mode),
             completion_mode=cfgm.completion_mode,
             dual_scale=cfgm.dual_scale,
+            eps_prime_mode=cfgm.eps_prime_mode,
+            prime_assembly_mode=cfgm.prime_assembly_mode,
+            generator_packetize_mode=cfgm.generator_packetize_mode,
+            generator_packetize_basis_mode=cfgm.generator_packetize_basis_mode,
         )
         bidx = _boundary_indices(cfgm)
         if bidx is None:
@@ -1454,6 +1730,10 @@ def main() -> int:
                 generator_norm_target=cfgm.generator_norm_target,
                 completion_mode=cfgm.completion_mode,
                 dual_scale=cfgm.dual_scale,
+                eps_prime_mode=cfgm.eps_prime_mode,
+                prime_assembly_mode=cfgm.prime_assembly_mode,
+                generator_packetize_mode=cfgm.generator_packetize_mode,
+                generator_packetize_basis_mode=cfgm.generator_packetize_basis_mode,
             )
             b0 = int(cfgm.b // 2)
             Lam0 = dn_map_two_channel_boundary(U, W, b0=b0, jitter=cfgm.jitter)
@@ -1472,6 +1752,10 @@ def main() -> int:
             bulk_mode=str(bulk_mode),
             completion_mode=cfgm.completion_mode,
             dual_scale=cfgm.dual_scale,
+            eps_prime_mode=cfgm.eps_prime_mode,
+            prime_assembly_mode=cfgm.prime_assembly_mode,
+            generator_packetize_mode=cfgm.generator_packetize_mode,
+            generator_packetize_basis_mode=cfgm.generator_packetize_basis_mode,
         )
         bidx = _boundary_indices(cfgm)
         if bidx is None:
@@ -1499,6 +1783,10 @@ def main() -> int:
             bulk_mode=str(bulk_mode),
             completion_mode=cfgm.completion_mode,
             dual_scale=cfgm.dual_scale,
+            eps_prime_mode=cfgm.eps_prime_mode,
+            prime_assembly_mode=cfgm.prime_assembly_mode,
+            generator_packetize_mode=cfgm.generator_packetize_mode,
+            generator_packetize_basis_mode=cfgm.generator_packetize_basis_mode,
         )
         bidx = _boundary_indices(cfgm)
         if bidx is None:
@@ -3589,8 +3877,9 @@ def main() -> int:
 
         pd.DataFrame(fit_rows).to_csv(os.path.join(out_dir, "E_Qlambda_convergence_fit.csv"), index=False)
 
-        # Optional: winding sanity checks for Q_lambda on the rectangle boundary, per N.
-        if conv_do_winding:
+        # Optional: boundary diagnostics on the rectangle boundary, per N.
+        # Note: boundary sample emission is useful even when winding diagnostics are disabled.
+        if conv_do_winding or conv_emit_boundary_samples:
             wind_rows: list[dict] = []
             boundary_rows: list[dict] = []
             ptsW = _boundary_points(convergence_rect, int(conv_wind_n_edge))
@@ -3627,6 +3916,30 @@ def main() -> int:
                 gaps_point: list[float] = []
                 seps2_track: list[float] = []
                 seps2_point: list[float] = []
+                det_rel_samples: list[complex] = []
+                logdet_Iminus_rel_samples: list[complex] = []
+                phi0_plus_samples: list[complex] = []
+                phi0_minus_samples: list[complex] = []
+                lam_cusp_plus_raw_samples: list[complex] = []
+                lam_cusp_minus_raw_samples: list[complex] = []
+                lam_cusp_plus_riesz_samples: list[complex] = []
+                lam_cusp_minus_riesz_samples: list[complex] = []
+                lam_cusp_plus_norm_samples: list[complex] = []
+                lam_cusp_minus_norm_samples: list[complex] = []
+                cusp_gap_plus_samples: list[float] = []
+                cusp_gap_minus_samples: list[float] = []
+                cusp_sep2_plus_samples: list[float] = []
+                cusp_sep2_minus_samples: list[float] = []
+                cusp_p0ov_plus_samples: list[float] = []
+                cusp_p0ov_minus_samples: list[float] = []
+                cusp_proj_idem_plus_samples: list[float] = []
+                cusp_proj_idem_minus_samples: list[float] = []
+                cusp_proj_comm_plus_samples: list[float] = []
+                cusp_proj_comm_minus_samples: list[float] = []
+                cusp_proj_trace_re_plus_samples: list[float] = []
+                cusp_proj_trace_im_plus_samples: list[float] = []
+                cusp_proj_trace_re_minus_samples: list[float] = []
+                cusp_proj_trace_im_minus_samples: list[float] = []
                 lam_raw_track_samples: list[complex] = []
                 lam_raw_point_samples: list[complex] = []
                 comp_idx_track_samples: list[int] = []
@@ -3645,6 +3958,10 @@ def main() -> int:
                 gap_min_point = float("inf")
                 jump_max_track = 0.0
                 jump_max_point = 0.0
+                prev_cusp_plus = complex("nan")
+                first_cusp_plus = complex("nan")
+                prev_cusp_minus = complex("nan")
+                first_cusp_minus = complex("nan")
                 for i, s in enumerate(ptsW):
                     gap_t = float("nan")
                     gap_p = float("nan")
@@ -3658,18 +3975,134 @@ def main() -> int:
                     comp_idx_p = -1
                     lam_comp_t = complex("nan")
                     lam_comp_p = complex("nan")
+                    det_rel_val = complex("nan")
+                    logdet_Iminus_rel_val = complex("nan")
+                    phi0_plus_val = complex("nan")
+                    phi0_minus_val = complex("nan")
+                    lam_cusp_plus_raw = complex("nan")
+                    lam_cusp_minus_raw = complex("nan")
+                    lam_cusp_plus_riesz = complex("nan")
+                    lam_cusp_minus_riesz = complex("nan")
+                    lam_cusp_plus_norm = complex("nan")
+                    lam_cusp_minus_norm = complex("nan")
+                    cusp_gap_plus = float("nan")
+                    cusp_gap_minus = float("nan")
+                    cusp_sep2_plus = float("nan")
+                    cusp_sep2_minus = float("nan")
+                    cusp_p0ov_plus = float("nan")
+                    cusp_p0ov_minus = float("nan")
+                    cusp_proj_idem_plus = float("nan")
+                    cusp_proj_idem_minus = float("nan")
+                    cusp_proj_comm_plus = float("nan")
+                    cusp_proj_comm_minus = float("nan")
+                    cusp_proj_trace_re_plus = float("nan")
+                    cusp_proj_trace_im_plus = float("nan")
+                    cusp_proj_trace_re_minus = float("nan")
+                    cusp_proj_trace_im_minus = float("nan")
                     try:
                         _, Lam, Sm = model_fnW(s, cfgW)
                         _, _, S0 = free_fnW(s, cfgW)
                         Srel = (Sm @ np.linalg.inv(S0)).astype(np.complex128)
+
+                        # Incoming-basis conjugation (used both for basis='incoming' observables
+                        # and for defining the canonical cusp/constant-mode scalar channel).
+                        nb = int(Lam.shape[0])
+                        Tin = (Lam + 1j * float(cfgW.eta) * np.eye(nb, dtype=np.complex128)).astype(np.complex128)
+                        if float(cfgW.cayley_eps) != 0.0:
+                            Tin = (Tin + float(cfgW.cayley_eps) * np.eye(nb, dtype=np.complex128)).astype(np.complex128)
+                        M_in = np.linalg.solve(Tin, (Srel @ Tin)).astype(np.complex128)
+
                         if conv_wind_basis == "incoming":
-                            nb = int(Lam.shape[0])
-                            Tin = (Lam + 1j * float(cfgW.eta) * np.eye(nb, dtype=np.complex128)).astype(np.complex128)
-                            if float(cfgW.cayley_eps) != 0.0:
-                                Tin = (Tin + float(cfgW.cayley_eps) * np.eye(nb, dtype=np.complex128)).astype(np.complex128)
-                            M = np.linalg.solve(Tin, (Srel @ Tin)).astype(np.complex128)
+                            M = M_in
                         else:
                             M = Srel
+
+                        # Determinant/logdet observables for the *full* relative scattering matrix.
+                        # Note: det(M) == det(Srel) (similarity invariant in the incoming basis).
+                        try:
+                            det_rel_val = complex(np.linalg.det(M))
+                        except Exception:
+                            det_rel_val = complex("nan")
+                        try:
+                            I = np.eye(int(M.shape[0]), dtype=np.complex128)
+                            sign_im, logabs_im = np.linalg.slogdet(I - M)
+                            logdet_Iminus_rel_val = complex(np.log(sign_im) + logabs_im)
+                        except Exception:
+                            logdet_Iminus_rel_val = complex("nan")
+
+                        # Canonical cusp/constant-mode scalar channel:
+                        # approximate P0^(2) Π_± by taking the constant vector in the Swap± reduced block.
+                        try:
+                            b0 = int(cfgW.b // 2)
+                            Bp = _swap_block_matrix(M_in, "plus", b0=b0)
+                            Bm = _swap_block_matrix(M_in, "minus", b0=b0)
+                            v = np.ones((int(b0),), dtype=np.complex128)
+                            vH = v.conj().T
+                            den = complex(vH @ v)
+                            if den != 0:
+                                phi0_plus_val = complex((vH @ (Bp @ v)) / den)
+                                phi0_minus_val = complex((vH @ (Bm @ v)) / den)
+
+                            # Doc-faithful cusp eigenchannel: overlap-selected eigenvalue + Riesz projector.
+                            # We track a continuous branch along the boundary by nearest-neighbor preference,
+                            # with closure at the final boundary sample.
+                            # Constant-mode line selector in the *current* basis.
+                            # In this repo's boundary basis, the physically constant boundary mode corresponds
+                            # to the all-ones vector (DFT(e0) in a Fourier-ordered basis).
+                            u0 = np.ones((int(b0),), dtype=np.complex128)
+                            prefer_plus: complex | None
+                            prefer_minus: complex | None
+                            if i == 0 or not is_finite_complex(prev_cusp_plus):
+                                prefer_plus = None
+                            elif i == (len(ptsW) - 1) and is_finite_complex(first_cusp_plus):
+                                prefer_plus = complex(first_cusp_plus)
+                            else:
+                                prefer_plus = complex(prev_cusp_plus)
+                            if i == 0 or not is_finite_complex(prev_cusp_minus):
+                                prefer_minus = None
+                            elif i == (len(ptsW) - 1) and is_finite_complex(first_cusp_minus):
+                                prefer_minus = complex(first_cusp_minus)
+                            else:
+                                prefer_minus = complex(prev_cusp_minus)
+
+                            cup = _cusp_channel_riesz(Bp, u0=u0, prefer=prefer_plus, overlap_floor=0.9, radius_frac=0.45, n_theta=32)
+                            cum = _cusp_channel_riesz(Bm, u0=u0, prefer=prefer_minus, overlap_floor=0.9, radius_frac=0.45, n_theta=32)
+
+                            lam_cusp_plus_raw = complex(cup.get("lam_raw", complex("nan")))
+                            lam_cusp_minus_raw = complex(cum.get("lam_raw", complex("nan")))
+                            lam_cusp_plus_riesz = complex(cup.get("lam_riesz", complex("nan")))
+                            lam_cusp_minus_riesz = complex(cum.get("lam_riesz", complex("nan")))
+
+                            cusp_gap_plus = float(cup.get("gap", float("nan")))
+                            cusp_gap_minus = float(cum.get("gap", float("nan")))
+                            cusp_sep2_plus = float(cup.get("sep2", float("nan")))
+                            cusp_sep2_minus = float(cum.get("sep2", float("nan")))
+                            cusp_p0ov_plus = float(cup.get("p0_overlap", float("nan")))
+                            cusp_p0ov_minus = float(cum.get("p0_overlap", float("nan")))
+
+                            diagp = cup.get("proj_diag", {}) if isinstance(cup.get("proj_diag", {}), dict) else {}
+                            diagm = cum.get("proj_diag", {}) if isinstance(cum.get("proj_diag", {}), dict) else {}
+                            cusp_proj_idem_plus = float(diagp.get("proj_idem_rel", float("nan")))
+                            cusp_proj_comm_plus = float(diagp.get("proj_comm_rel", float("nan")))
+                            cusp_proj_trace_re_plus = float(diagp.get("proj_trace_re", float("nan")))
+                            cusp_proj_trace_im_plus = float(diagp.get("proj_trace_im", float("nan")))
+                            cusp_proj_idem_minus = float(diagm.get("proj_idem_rel", float("nan")))
+                            cusp_proj_comm_minus = float(diagm.get("proj_comm_rel", float("nan")))
+                            cusp_proj_trace_re_minus = float(diagm.get("proj_trace_re", float("nan")))
+                            cusp_proj_trace_im_minus = float(diagm.get("proj_trace_im", float("nan")))
+
+                            if i == 0:
+                                first_cusp_plus = complex(lam_cusp_plus_raw)
+                                first_cusp_minus = complex(lam_cusp_minus_raw)
+                            prev_cusp_plus = complex(lam_cusp_plus_raw)
+                            prev_cusp_minus = complex(lam_cusp_minus_raw)
+                        except Exception:
+                            phi0_plus_val = complex("nan")
+                            phi0_minus_val = complex("nan")
+                            lam_cusp_plus_raw = complex("nan")
+                            lam_cusp_minus_raw = complex("nan")
+                            lam_cusp_plus_riesz = complex("nan")
+                            lam_cusp_minus_riesz = complex("nan")
 
                         phi_norm = phi_target(s, primes=cfgW.primes, completion_mode=cfgW.completion_mode, mode=phi_target_mode)
                         phi_sel = phi_target(s, primes=cfgW.primes, completion_mode=cfgW.completion_mode, mode=phi_select_mode)
@@ -3768,6 +4201,12 @@ def main() -> int:
                         lam_track = complex(lam_raw_track * lam_fac)
                         lam_point = complex(lam_raw_point * lam_fac)
 
+                        # Apply the same normalization-map factor to the cusp eigenchannels.
+                        if is_finite_complex(lam_cusp_plus_riesz):
+                            lam_cusp_plus_norm = complex(lam_cusp_plus_riesz * lam_fac)
+                        if is_finite_complex(lam_cusp_minus_riesz):
+                            lam_cusp_minus_norm = complex(lam_cusp_minus_riesz * lam_fac)
+
                         prev_track = lam_raw_track
                         prev_point = lam_raw_point
                         qs_track.append(lam_track / phi_norm)
@@ -3777,6 +4216,32 @@ def main() -> int:
                         qs_pointwise.append(complex("nan"))
                         failures += 1
                         phi_bad += 1
+
+                    det_rel_samples.append(det_rel_val)
+                    logdet_Iminus_rel_samples.append(logdet_Iminus_rel_val)
+                    phi0_plus_samples.append(phi0_plus_val)
+                    phi0_minus_samples.append(phi0_minus_val)
+
+                    lam_cusp_plus_raw_samples.append(lam_cusp_plus_raw)
+                    lam_cusp_minus_raw_samples.append(lam_cusp_minus_raw)
+                    lam_cusp_plus_riesz_samples.append(lam_cusp_plus_riesz)
+                    lam_cusp_minus_riesz_samples.append(lam_cusp_minus_riesz)
+                    lam_cusp_plus_norm_samples.append(lam_cusp_plus_norm)
+                    lam_cusp_minus_norm_samples.append(lam_cusp_minus_norm)
+                    cusp_gap_plus_samples.append(float(cusp_gap_plus) if np.isfinite(cusp_gap_plus) else float("nan"))
+                    cusp_gap_minus_samples.append(float(cusp_gap_minus) if np.isfinite(cusp_gap_minus) else float("nan"))
+                    cusp_sep2_plus_samples.append(float(cusp_sep2_plus) if np.isfinite(cusp_sep2_plus) else float("nan"))
+                    cusp_sep2_minus_samples.append(float(cusp_sep2_minus) if np.isfinite(cusp_sep2_minus) else float("nan"))
+                    cusp_p0ov_plus_samples.append(float(cusp_p0ov_plus) if np.isfinite(cusp_p0ov_plus) else float("nan"))
+                    cusp_p0ov_minus_samples.append(float(cusp_p0ov_minus) if np.isfinite(cusp_p0ov_minus) else float("nan"))
+                    cusp_proj_idem_plus_samples.append(float(cusp_proj_idem_plus) if np.isfinite(cusp_proj_idem_plus) else float("nan"))
+                    cusp_proj_idem_minus_samples.append(float(cusp_proj_idem_minus) if np.isfinite(cusp_proj_idem_minus) else float("nan"))
+                    cusp_proj_comm_plus_samples.append(float(cusp_proj_comm_plus) if np.isfinite(cusp_proj_comm_plus) else float("nan"))
+                    cusp_proj_comm_minus_samples.append(float(cusp_proj_comm_minus) if np.isfinite(cusp_proj_comm_minus) else float("nan"))
+                    cusp_proj_trace_re_plus_samples.append(float(cusp_proj_trace_re_plus) if np.isfinite(cusp_proj_trace_re_plus) else float("nan"))
+                    cusp_proj_trace_im_plus_samples.append(float(cusp_proj_trace_im_plus) if np.isfinite(cusp_proj_trace_im_plus) else float("nan"))
+                    cusp_proj_trace_re_minus_samples.append(float(cusp_proj_trace_re_minus) if np.isfinite(cusp_proj_trace_re_minus) else float("nan"))
+                    cusp_proj_trace_im_minus_samples.append(float(cusp_proj_trace_im_minus) if np.isfinite(cusp_proj_trace_im_minus) else float("nan"))
 
                     gaps_track.append(float(gap_t) if np.isfinite(gap_t) else float("nan"))
                     gaps_point.append(float(gap_p) if np.isfinite(gap_p) else float("nan"))
@@ -3795,6 +4260,16 @@ def main() -> int:
                     for i, s in enumerate(ptsW):
                         qtr = qs_track[i] if i < len(qs_track) else complex("nan")
                         qpw = qs_pointwise[i] if i < len(qs_pointwise) else complex("nan")
+                        det_rel = det_rel_samples[i] if i < len(det_rel_samples) else complex("nan")
+                        logdet_im_rel = logdet_Iminus_rel_samples[i] if i < len(logdet_Iminus_rel_samples) else complex("nan")
+                        phi0p = phi0_plus_samples[i] if i < len(phi0_plus_samples) else complex("nan")
+                        phi0m = phi0_minus_samples[i] if i < len(phi0_minus_samples) else complex("nan")
+                        lcpr = lam_cusp_plus_raw_samples[i] if i < len(lam_cusp_plus_raw_samples) else complex("nan")
+                        lcmr = lam_cusp_minus_raw_samples[i] if i < len(lam_cusp_minus_raw_samples) else complex("nan")
+                        lcp = lam_cusp_plus_riesz_samples[i] if i < len(lam_cusp_plus_riesz_samples) else complex("nan")
+                        lcm = lam_cusp_minus_riesz_samples[i] if i < len(lam_cusp_minus_riesz_samples) else complex("nan")
+                        lcpn = lam_cusp_plus_norm_samples[i] if i < len(lam_cusp_plus_norm_samples) else complex("nan")
+                        lcmn = lam_cusp_minus_norm_samples[i] if i < len(lam_cusp_minus_norm_samples) else complex("nan")
                         try:
                             qabs = float(abs(qtr)) if is_finite_complex(qtr) else float("nan")
                             logabs = float(np.log(qabs)) if np.isfinite(qabs) and qabs > 0 else float("nan")
@@ -3802,7 +4277,7 @@ def main() -> int:
                             qabs, logabs = float("nan"), float("nan")
                         boundary_rows.append(
                             {
-                                "source": "convergence_winding",
+                                "source": ("convergence_winding" if conv_do_winding else "convergence_boundary_samples"),
                                 "N": int(N),
                                 "basis": str(conv_wind_basis),
                                 "block": "plus" if conv_block_key == "+" else "minus",
@@ -3829,6 +4304,43 @@ def main() -> int:
                                 "lam_comp_point_im": float(np.imag(lam_comp_point_samples[i])) if i < len(lam_comp_point_samples) and is_finite_complex(lam_comp_point_samples[i]) else float("nan"),
                                 "jump_track": float(jumps_track[i]) if i < len(jumps_track) else float("nan"),
                                 "jump_pointwise": float(jumps_point[i]) if i < len(jumps_point) else float("nan"),
+                                "det_rel_re": float(np.real(det_rel)) if is_finite_complex(det_rel) else float("nan"),
+                                "det_rel_im": float(np.imag(det_rel)) if is_finite_complex(det_rel) else float("nan"),
+                                "logdet_Iminus_rel_re": float(np.real(logdet_im_rel)) if is_finite_complex(logdet_im_rel) else float("nan"),
+                                "logdet_Iminus_rel_im": float(np.imag(logdet_im_rel)) if is_finite_complex(logdet_im_rel) else float("nan"),
+                                "phi0_plus_re": float(np.real(phi0p)) if is_finite_complex(phi0p) else float("nan"),
+                                "phi0_plus_im": float(np.imag(phi0p)) if is_finite_complex(phi0p) else float("nan"),
+                                "phi0_minus_re": float(np.real(phi0m)) if is_finite_complex(phi0m) else float("nan"),
+                                "phi0_minus_im": float(np.imag(phi0m)) if is_finite_complex(phi0m) else float("nan"),
+
+                                "lambda_cusp_plus_raw_re": float(np.real(lcpr)) if is_finite_complex(lcpr) else float("nan"),
+                                "lambda_cusp_plus_raw_im": float(np.imag(lcpr)) if is_finite_complex(lcpr) else float("nan"),
+                                "lambda_cusp_minus_raw_re": float(np.real(lcmr)) if is_finite_complex(lcmr) else float("nan"),
+                                "lambda_cusp_minus_raw_im": float(np.imag(lcmr)) if is_finite_complex(lcmr) else float("nan"),
+                                "lambda_cusp_plus_re": float(np.real(lcp)) if is_finite_complex(lcp) else float("nan"),
+                                "lambda_cusp_plus_im": float(np.imag(lcp)) if is_finite_complex(lcp) else float("nan"),
+                                "lambda_cusp_minus_re": float(np.real(lcm)) if is_finite_complex(lcm) else float("nan"),
+                                "lambda_cusp_minus_im": float(np.imag(lcm)) if is_finite_complex(lcm) else float("nan"),
+                                "lambda_cusp_plus_norm_re": float(np.real(lcpn)) if is_finite_complex(lcpn) else float("nan"),
+                                "lambda_cusp_plus_norm_im": float(np.imag(lcpn)) if is_finite_complex(lcpn) else float("nan"),
+                                "lambda_cusp_minus_norm_re": float(np.real(lcmn)) if is_finite_complex(lcmn) else float("nan"),
+                                "lambda_cusp_minus_norm_im": float(np.imag(lcmn)) if is_finite_complex(lcmn) else float("nan"),
+
+                                "cusp_gap_plus": float(cusp_gap_plus_samples[i]) if i < len(cusp_gap_plus_samples) else float("nan"),
+                                "cusp_gap_minus": float(cusp_gap_minus_samples[i]) if i < len(cusp_gap_minus_samples) else float("nan"),
+                                "cusp_sep2_plus": float(cusp_sep2_plus_samples[i]) if i < len(cusp_sep2_plus_samples) else float("nan"),
+                                "cusp_sep2_minus": float(cusp_sep2_minus_samples[i]) if i < len(cusp_sep2_minus_samples) else float("nan"),
+                                "cusp_p0_overlap_plus": float(cusp_p0ov_plus_samples[i]) if i < len(cusp_p0ov_plus_samples) else float("nan"),
+                                "cusp_p0_overlap_minus": float(cusp_p0ov_minus_samples[i]) if i < len(cusp_p0ov_minus_samples) else float("nan"),
+                                "cusp_proj_idem_rel_plus": float(cusp_proj_idem_plus_samples[i]) if i < len(cusp_proj_idem_plus_samples) else float("nan"),
+                                "cusp_proj_idem_rel_minus": float(cusp_proj_idem_minus_samples[i]) if i < len(cusp_proj_idem_minus_samples) else float("nan"),
+                                "cusp_proj_comm_rel_plus": float(cusp_proj_comm_plus_samples[i]) if i < len(cusp_proj_comm_plus_samples) else float("nan"),
+                                "cusp_proj_comm_rel_minus": float(cusp_proj_comm_minus_samples[i]) if i < len(cusp_proj_comm_minus_samples) else float("nan"),
+                                "cusp_proj_trace_re_plus": float(cusp_proj_trace_re_plus_samples[i]) if i < len(cusp_proj_trace_re_plus_samples) else float("nan"),
+                                "cusp_proj_trace_im_plus": float(cusp_proj_trace_im_plus_samples[i]) if i < len(cusp_proj_trace_im_plus_samples) else float("nan"),
+                                "cusp_proj_trace_re_minus": float(cusp_proj_trace_re_minus_samples[i]) if i < len(cusp_proj_trace_re_minus_samples) else float("nan"),
+                                "cusp_proj_trace_im_minus": float(cusp_proj_trace_im_minus_samples[i]) if i < len(cusp_proj_trace_im_minus_samples) else float("nan"),
+
                                 "q_track_re": float(np.real(qtr)) if is_finite_complex(qtr) else float("nan"),
                                 "q_track_im": float(np.imag(qtr)) if is_finite_complex(qtr) else float("nan"),
                                 "q_point_re": float(np.real(qpw)) if is_finite_complex(qpw) else float("nan"),
@@ -3838,37 +4350,38 @@ def main() -> int:
                             }
                         )
 
-                w_track, wfail_track = _winding_count_from_samples(qs_track)
-                w_point, wfail_point = _winding_count_from_samples(qs_pointwise)
-                wind_rows.append(
-                    {
-                        "source": "convergence_sweep",
-                        "N": int(N),
-                        "basis": str(conv_wind_basis),
-                        "block": "plus" if conv_block_key == "+" else "minus",
-                        "sigma_min": float(convergence_rect[0]),
-                        "sigma_max": float(convergence_rect[1]),
-                        "t_min": float(convergence_rect[2]),
-                        "t_max": float(convergence_rect[3]),
-                        "n_edge": int(conv_wind_n_edge),
-                        "wind_track": float(w_track),
-                        "wind_track_abs": float(abs(w_track)) if np.isfinite(w_track) else float("nan"),
-                        "wind_pointwise": float(w_point),
-                        "wind_pointwise_abs": float(abs(w_point)) if np.isfinite(w_point) else float("nan"),
-                        "gap_min_track": float(gap_min_track) if np.isfinite(gap_min_track) and gap_min_track < float("inf") else float("nan"),
-                        "gap_min_pointwise": float(gap_min_point) if np.isfinite(gap_min_point) and gap_min_point < float("inf") else float("nan"),
-                        "jump_max_track": float(jump_max_track) if np.isfinite(jump_max_track) else float("nan"),
-                        "jump_max_pointwise": float(jump_max_point) if np.isfinite(jump_max_point) else float("nan"),
-                        "failures": int(failures + wfail_track + wfail_point),
-                        "phi_abs_min": float(phi_abs_min) if np.isfinite(phi_abs_min) else float("nan"),
-                        "phi_bad": int(phi_bad),
-                        "eta": float(cfgW.eta),
-                        "schur_jitter": float(cfgW.jitter),
-                        "cayley_eps": float(cfgW.cayley_eps),
-                    }
-                )
+                if conv_do_winding:
+                    w_track, wfail_track = _winding_count_from_samples(qs_track)
+                    w_point, wfail_point = _winding_count_from_samples(qs_pointwise)
+                    wind_rows.append(
+                        {
+                            "source": "convergence_sweep",
+                            "N": int(N),
+                            "basis": str(conv_wind_basis),
+                            "block": "plus" if conv_block_key == "+" else "minus",
+                            "sigma_min": float(convergence_rect[0]),
+                            "sigma_max": float(convergence_rect[1]),
+                            "t_min": float(convergence_rect[2]),
+                            "t_max": float(convergence_rect[3]),
+                            "n_edge": int(conv_wind_n_edge),
+                            "wind_track": float(w_track),
+                            "wind_track_abs": float(abs(w_track)) if np.isfinite(w_track) else float("nan"),
+                            "wind_pointwise": float(w_point),
+                            "wind_pointwise_abs": float(abs(w_point)) if np.isfinite(w_point) else float("nan"),
+                            "gap_min_track": float(gap_min_track) if np.isfinite(gap_min_track) and gap_min_track < float("inf") else float("nan"),
+                            "gap_min_pointwise": float(gap_min_point) if np.isfinite(gap_min_point) and gap_min_point < float("inf") else float("nan"),
+                            "jump_max_track": float(jump_max_track) if np.isfinite(jump_max_track) else float("nan"),
+                            "jump_max_pointwise": float(jump_max_point) if np.isfinite(jump_max_point) else float("nan"),
+                            "failures": int(failures + wfail_track + wfail_point),
+                            "phi_abs_min": float(phi_abs_min) if np.isfinite(phi_abs_min) else float("nan"),
+                            "phi_bad": int(phi_bad),
+                            "eta": float(cfgW.eta),
+                            "schur_jitter": float(cfgW.jitter),
+                            "cayley_eps": float(cfgW.cayley_eps),
+                        }
+                    )
 
-            if wind_rows:
+            if conv_do_winding and wind_rows:
                 pd.DataFrame(wind_rows).to_csv(os.path.join(out_dir, conv_wind_out), index=False)
             if conv_emit_boundary_samples and boundary_rows:
                 pd.DataFrame(boundary_rows).to_csv(os.path.join(out_dir, conv_boundary_samples_out), index=False)
@@ -5068,6 +5581,10 @@ def main() -> int:
                     bulk_mode=str(bulk_mode),
                     completion_mode=cfgN.completion_mode,
                     dual_scale=cfgN.dual_scale,
+                    eps_prime_mode=cfgN.eps_prime_mode,
+                    prime_assembly_mode=cfgN.prime_assembly_mode,
+                    generator_packetize_mode=cfgN.generator_packetize_mode,
+                    generator_packetize_basis_mode=cfgN.generator_packetize_basis_mode,
                 )
                 bidx = _boundary_indices(cfgN)
                 if bidx is None:
@@ -5087,6 +5604,10 @@ def main() -> int:
                     bulk_mode=str(bulk_mode),
                     completion_mode=cfgN.completion_mode,
                     dual_scale=cfgN.dual_scale,
+                    eps_prime_mode=cfgN.eps_prime_mode,
+                    prime_assembly_mode=cfgN.prime_assembly_mode,
+                    generator_packetize_mode=cfgN.generator_packetize_mode,
+                    generator_packetize_basis_mode=cfgN.generator_packetize_basis_mode,
                 )
                 if bidx is None:
                     Lam0 = dn_map(A0, b=cfgN.b, jitter=cfgN.jitter)

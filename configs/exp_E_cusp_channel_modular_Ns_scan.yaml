@@ -1,0 +1,46 @@
+# Doc-faithful cusp-channel extraction: quick N-stability scan
+# Goal: check whether Q(s)=lambda_cusp(s)/phi_mod(s) becomes more rigid as N increases.
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+Ns: [64, 96, 128]
+
+boundary_frac: 0.25
+eta: 1.0
+schur_jitter: 1.0e-10
+
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+dual_scale: 1.0
+
+generator_norm: fro
+generator_norm_target: 1.0
+weight_k: 0
+
+# Basepoint for normalization-map modes that need it
+s0: 2.0
+
+phi_target_mode: modular
+phi_select_mode: modular
+
+# Candidate Tier-2 normalization map
+lambda_norm_mode: ginf_multiply
+
+# Convergence-only sweep + boundary sampling
+do_convergence_sweep_only: true
+
+convergence_rect: [1.90, 2.00, 10.0, 30.0]
+convergence_n_sigma: 5
+convergence_n_t: 20
+
+convergence_do_winding: false
+convergence_do_magphase_diag: false
+
+# Reduce edge resolution for faster N scan (right edge will have ~1/4 of these)
+convergence_wind_n_edge: 800
+
+convergence_emit_boundary_samples: true
+convergence_boundary_samples_out_csv: E_Qlambda_convergence_boundary_samples.csv
+
+mp_dps: 50
+print_progress: false

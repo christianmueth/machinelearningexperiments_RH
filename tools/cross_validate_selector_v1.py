@@ -92,11 +92,14 @@ def _format_label_mix(labels: list[str], topk: int = 4) -> str:
 
 
 def _extract_ablation(payload: dict[str, Any], key: str, default: float = float("nan")) -> float:
-    try:
-        v = payload["ablation"]["zeta_structure"][key]["spearman_rank_corr"]
-        return float(v)
-    except Exception:
-        return float(default)
+    ab = payload.get("ablation", {}) or {}
+    for block in ["zeta_structure", "spectral_identity", "structure", "robustness"]:
+        try:
+            v = (ab.get(block, {}) or {})[key]["spearman_rank_corr"]
+            return float(v)
+        except Exception:
+            continue
+    return float(default)
 
 
 def _dominant_signal(payload: dict[str, Any]) -> str:
@@ -128,7 +131,7 @@ def _dominant_signal(payload: dict[str, Any]) -> str:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Cross-basket validation runner for frozen selector_v1")
+    ap = argparse.ArgumentParser(description="Cross-basket validation runner (selector_v1 default; can run selector_v2)")
     ap.add_argument("--root", default=".", help="Workspace root containing run families")
     ap.add_argument("--n", type=int, default=4, help="How many distinct run families to validate")
     ap.add_argument(
@@ -158,6 +161,12 @@ def main() -> None:
         type=int,
         default=30,
         help="Skip run_dirs whose validator basket is smaller than this (post-filter).",
+    )
+    ap.add_argument(
+        "--selector_version",
+        default="selector_v1",
+        choices=["selector_v1", "selector_v2"],
+        help="Selector version to request from the validator.",
     )
     ap.add_argument(
         "--out_csv",
@@ -254,6 +263,8 @@ def main() -> None:
             str(rd.relative_to(root) if rd.is_relative_to(root) else rd),
             "--synthetic_smoothness_controls",
             str(int(args.synthetic_controls)),
+            "--selector_version",
+            str(args.selector_version),
         ]
 
         if int(args.scan_family):
@@ -329,9 +340,16 @@ def main() -> None:
                 "dead_in_top10_structure": (payload.get("confusion", {}) or {}).get("structure", {}).get("dead_in_topk"),
                 "dead_in_top10_robust": (payload.get("confusion", {}) or {}).get("robustness", {}).get("dead_in_topk"),
                 "dead_in_top10_zeta": (payload.get("confusion", {}) or {}).get("zeta_structure", {}).get("dead_in_topk"),
+                "dead_in_top10_spectral": (payload.get("confusion", {}) or {}).get("spectral_identity", {}).get("dead_in_topk"),
+                "dead_in_top10_continuation": (payload.get("confusion", {}) or {}).get("continuation", {}).get("dead_in_topk"),
                 "drop_best_t_align": _extract_ablation(payload, "drop_best_t_align"),
                 "drop_mirror": _extract_ablation(payload, "drop_mirror"),
                 "drop_divisor": _extract_ablation(payload, "drop_divisor"),
+                "drop_FE": _extract_ablation(payload, "drop_FE"),
+                "drop_unitarity": _extract_ablation(payload, "drop_unitarity"),
+                "drop_hermitian": _extract_ablation(payload, "drop_hermitian"),
+                "drop_cont_t": _extract_ablation(payload, "drop_cont_t"),
+                "drop_cont_sigma": _extract_ablation(payload, "drop_cont_sigma"),
                 "support_mirror_available": support_counts.get("mirror_available"),
                 "support_divisor_available": support_counts.get("divisor_available"),
                 "support_both_unavailable": support_counts.get("both_unavailable"),

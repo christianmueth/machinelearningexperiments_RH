@@ -1,0 +1,53 @@
+# Operator-level pivot (strong): enforce an Euler-product-like prime composition
+# at the bulk operator level: K(s) = Π_p (I - eps(p,s) T_p)^{-1} - I
+# combined with commutative packetized generators.
+
+primes: [2, 3, 5, 7, 11, 13, 17, 19, 23]
+Ns: [64]
+
+boundary_frac: 0.25
+eta: 1.0
+schur_jitter: 1.0e-10
+cayley_eps: 0.0
+
+bulk_mode: two_channel_symmetric
+completion_mode: dual_1_minus_s
+
+dual_scale: 1.0
+
+generator_norm: fro
+generator_norm_target: 1.0
+weight_k: 0
+
+# Operator-family knobs
+
+eps_prime_mode: 2s-1
+prime_assembly_mode: euler_product
+
+generator_packetize_mode: comm_diag
+generator_packetize_basis_mode: sum_norm
+
+# Normalization point
+s0: 2.0
+
+phi_target_mode: euler_partial
+phi_select_mode: euler_partial
+
+do_convergence_sweep_only: true
+
+convergence_rect: [1.90, 2.00, 10.0, 30.0]
+convergence_n_sigma: 5
+convergence_n_t: 20
+
+convergence_do_winding: false
+convergence_do_magphase_diag: false
+convergence_wind_basis: rel
+convergence_wind_block: plus
+
+convergence_wind_n_edge: 1200
+
+convergence_emit_boundary_samples: true
+convergence_boundary_samples_out_csv: E_Qlambda_convergence_boundary_samples.csv
+
+mp_dps: 50
+print_progress: false
