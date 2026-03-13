@@ -82,6 +82,8 @@ class FitResult:
 
     ghost_beta_mode: str
     beta: float
+    beta2: float
+    beta3: float
 
     b: float
     c: float
@@ -286,17 +288,36 @@ def main() -> int:
 
     ap.add_argument(
         "--ghost_beta_mode",
-        choices=["none", "step_m_ge2", "linear_m_minus1"],
+        choices=["none", "step_m_ge2", "linear_m_minus1", "step_m_eq2_and_m_ge3"],
         default="none",
         help=(
             "Optional ghost-depth correction family applied before Euler transform: "
             "g*_m = g_m - beta*h(m), where h(m)=1_{m>=2} for step_m_ge2 or h(m)=(m-1) for linear_m_minus1. "
+            "For step_m_eq2_and_m_ge3, we use g*_m = g_m - beta2*1_{m=2} - beta3*1_{m>=3}. "
             "This keeps p/ghost_mode/observable/geometry frozen while testing tower-depth distortion corrections."
         ),
     )
     ap.add_argument("--beta_min", type=float, default=-2.0)
     ap.add_argument("--beta_max", type=float, default=2.0)
     ap.add_argument("--beta_step", type=float, default=0.02)
+
+    ap.add_argument(
+        "--beta2_fixed",
+        type=float,
+        default=float("nan"),
+        help=(
+            "For step_m_eq2_and_m_ge3: if set, forces beta2 constant across the whole u-window. "
+            "If both beta2_fixed and beta3_fixed are set, no beta grid search is performed."
+        ),
+    )
+    ap.add_argument(
+        "--beta3_fixed",
+        type=float,
+        default=float("nan"),
+        help=(
+            "For step_m_eq2_and_m_ge3: if set, forces beta3 constant across the whole u-window."
+        ),
+    )
 
     ap.add_argument(
         "--beta_fixed",
@@ -385,9 +406,8 @@ def main() -> int:
     beta_grid: list[float] = [0.0]
     if beta_mode != "none":
         beta_fixed = float(args.beta_fixed)
-        if math.isfinite(beta_fixed):
-            beta_grid = [float(beta_fixed)]
-        else:
+        if beta_mode == "step_m_eq2_and_m_ge3":
+            # beta_grid is still used as the shared 1D grid for beta2/beta3 (we form a cartesian product below).
             beta_grid = []
             k_beta = 0
             while True:
@@ -396,6 +416,18 @@ def main() -> int:
                     break
                 beta_grid.append(float(beta))
                 k_beta += 1
+        else:
+            if math.isfinite(beta_fixed):
+                beta_grid = [float(beta_fixed)]
+            else:
+                beta_grid = []
+                k_beta = 0
+                while True:
+                    beta = beta_min + k_beta * beta_step
+                    if beta > beta_max + 1e-12:
+                        break
+                    beta_grid.append(float(beta))
+                    k_beta += 1
 
     out_rows: list[FitResult] = []
 
@@ -480,19 +512,53 @@ def main() -> int:
                 return float(int(m) - 1)
             return 0.0
 
-        def _Acoeff_from_beta(beta: float) -> list[float]:
-            # Euler-transform coefficients A_k from corrected ghost g*_m.
-            gstar = [0.0] * (dyadic_k_max + 1)
-            for m in range(1, dyadic_k_max + 1):
-                gstar[m] = float(g[m]) - float(beta) * float(_ghost_h(int(m)))
+        def _Acoeff_from_betas(beta: float, beta2: float, beta3: float) -> list[float]:
+            """Return Acoeff[0..max_power] from corrected g*_m.
 
+            We only need g*_1..g*_max_power because Euler-transform coefficients up to max_power depend only on that prefix.
+            This makes two-tier grid search feasible.
+            """
+
+            def gstar_j(j: int) -> float:
+                j = int(j)
+                if beta_mode == "step_m_eq2_and_m_ge3":
+                    if j == 2:
+                        return float(g[j]) - float(beta2)
+                    if j >= 3:
+                        return float(g[j]) - float(beta3)
+                    return float(g[j])
+                # 1-parameter families
+                return float(g[j]) - float(beta) * float(_ghost_h(j))
+
+            # Explicit formulas for A1..A3; then fall back to recursion if max_power>3.
             Acoeff = [0.0] * (max_power + 1)
             Acoeff[0] = 1.0
-            for k_pow in range(1, max_power + 1):
-                acc = 0.0
-                for j in range(1, k_pow + 1):
-                    acc += float(gstar[j]) * float(Acoeff[k_pow - j])
-                Acoeff[k_pow] = float(acc) / float(k_pow)
+            if max_power >= 1:
+                g1 = float(gstar_j(1))
+                Acoeff[1] = float(g1)
+            if max_power >= 2:
+                g1 = float(Acoeff[1])
+                g2 = float(gstar_j(2))
+                Acoeff[2] = float((g1 * g1 + g2) / 2.0)
+            if max_power >= 3:
+                g1 = float(Acoeff[1])
+                g2 = float(gstar_j(2))
+                g3 = float(gstar_j(3))
+                Acoeff[3] = float((g1 * Acoeff[2] + g2 * Acoeff[1] + g3) / 3.0)
+
+            if max_power > 3:
+                # General recursion using corrected prefix g*_j.
+                gstar = [0.0] * (max_power + 1)
+                for j in range(1, max_power + 1):
+                    gstar[j] = float(gstar_j(j))
+                for k_pow in range(1, max_power + 1):
+                    if k_pow <= 3:
+                        continue
+                    acc = 0.0
+                    for j in range(1, k_pow + 1):
+                        acc += float(gstar[j]) * float(Acoeff[k_pow - j])
+                    Acoeff[k_pow] = float(acc) / float(k_pow)
+
             return Acoeff
 
         def _a_lift_from_Acoeff(n: int, Acoeff: list[float]) -> float:
@@ -560,7 +626,7 @@ def main() -> int:
 
         # Build per-n rows.
         def build_rows_for_beta(beta: float) -> tuple[list[NRow], list[NRow]]:
-            Acoeff = _Acoeff_from_beta(float(beta))
+            Acoeff = _Acoeff_from_betas(float(beta), float(beta), float(beta))
             rows_eval: list[NRow] = []
             for n in sorted(ns_eval):
                 f = _prime_factorization(int(n))
@@ -616,6 +682,8 @@ def main() -> int:
 
                     ghost_beta_mode=str(beta_mode),
                     beta=float(beta),
+                    beta2=float(beta),
+                    beta3=float(beta),
                     b=float(b),
                     c=float(c),
                     train_E_sf=float(train_E_sf),
@@ -683,50 +751,185 @@ def main() -> int:
 
         # Optional Experiment 2: ghost-depth correction beta (plus optional constant c).
         if beta_mode != "none":
-            best_beta0 = 0.0
-            best_L_beta0 = float("inf")
-            best_beta_c = 0.0
-            best_c_beta = 0.0
-            best_L_beta_c = float("inf")
+            if beta_mode != "step_m_eq2_and_m_ge3":
+                best_beta0 = 0.0
+                best_L_beta0 = float("inf")
+                best_beta_c = 0.0
+                best_c_beta = 0.0
+                best_L_beta_c = float("inf")
 
-            for beta in beta_grid:
-                rows_eval_b, rows_train_b = build_rows_for_beta(float(beta))
+                for beta in beta_grid:
+                    rows_eval_b, rows_train_b = build_rows_for_beta(float(beta))
 
-                # beta-only (no c)
-                L0 = _objective(rows_train_b, b=0.0, c=0.0, min_abs=min_abs, lam_pp=lam_pp, mu_mix=mu_mix)
-                if L0 < best_L_beta0:
-                    best_L_beta0 = float(L0)
-                    best_beta0 = float(beta)
+                    # beta-only (no c)
+                    L0 = _objective(rows_train_b, b=0.0, c=0.0, min_abs=min_abs, lam_pp=lam_pp, mu_mix=mu_mix)
+                    if L0 < best_L_beta0:
+                        best_L_beta0 = float(L0)
+                        best_beta0 = float(beta)
 
-                # beta + best c (b=0)
-                local_best_c = 0.0
-                local_best_L = float("inf")
-                if math.isfinite(c_fixed):
-                    local_best_c = float(c_fixed)
-                    local_best_L = _objective(rows_train_b, b=0.0, c=float(c_fixed), min_abs=min_abs, lam_pp=lam_pp, mu_mix=mu_mix)
+                    # beta + best c (b=0)
+                    local_best_c = 0.0
+                    local_best_L = float("inf")
+                    if math.isfinite(c_fixed):
+                        local_best_c = float(c_fixed)
+                        local_best_L = _objective(rows_train_b, b=0.0, c=float(c_fixed), min_abs=min_abs, lam_pp=lam_pp, mu_mix=mu_mix)
+                    else:
+                        for c in _best_c_candidates(rows_train_b, b=0.0, min_abs=min_abs):
+                            L = _objective(rows_train_b, b=0.0, c=float(c), min_abs=min_abs, lam_pp=lam_pp, mu_mix=mu_mix)
+                            if L < local_best_L:
+                                local_best_L = float(L)
+                                local_best_c = float(c)
+                    if local_best_L < best_L_beta_c:
+                        best_L_beta_c = float(local_best_L)
+                        best_beta_c = float(beta)
+                        best_c_beta = float(local_best_c)
+
+                rows_eval_beta0, rows_train_beta0 = build_rows_for_beta(float(best_beta0))
+                record("beta_only", beta=float(best_beta0), rows_eval=rows_eval_beta0, rows_train=rows_train_beta0, b=0.0, c=0.0)
+
+                rows_eval_betac, rows_train_betac = build_rows_for_beta(float(best_beta_c))
+                record(
+                    "beta_plus_c",
+                    beta=float(best_beta_c),
+                    rows_eval=rows_eval_betac,
+                    rows_train=rows_train_betac,
+                    b=0.0,
+                    c=float(best_c_beta),
+                )
+            else:
+                # Two-tier: beta2 at m=2 and beta3 for m>=3. Fit (beta2,beta3) on training set.
+                beta2_fixed = float(args.beta2_fixed)
+                beta3_fixed = float(args.beta3_fixed)
+
+                if math.isfinite(beta2_fixed):
+                    beta2_vals = [float(beta2_fixed)]
                 else:
-                    for c in _best_c_candidates(rows_train_b, b=0.0, min_abs=min_abs):
-                        L = _objective(rows_train_b, b=0.0, c=float(c), min_abs=min_abs, lam_pp=lam_pp, mu_mix=mu_mix)
-                        if L < local_best_L:
-                            local_best_L = float(L)
-                            local_best_c = float(c)
-                if local_best_L < best_L_beta_c:
-                    best_L_beta_c = float(local_best_L)
-                    best_beta_c = float(beta)
-                    best_c_beta = float(local_best_c)
+                    beta2_vals = list(beta_grid)
 
-            rows_eval_beta0, rows_train_beta0 = build_rows_for_beta(float(best_beta0))
-            record("beta_only", beta=float(best_beta0), rows_eval=rows_eval_beta0, rows_train=rows_train_beta0, b=0.0, c=0.0)
+                if math.isfinite(beta3_fixed):
+                    beta3_vals = [float(beta3_fixed)]
+                else:
+                    beta3_vals = list(beta_grid)
 
-            rows_eval_betac, rows_train_betac = build_rows_for_beta(float(best_beta_c))
-            record(
-                "beta_plus_c",
-                beta=float(best_beta_c),
-                rows_eval=rows_eval_betac,
-                rows_train=rows_train_betac,
-                b=0.0,
-                c=float(best_c_beta),
-            )
+                # Precompute empirical rows once (log_abs_emp, Omega, cls/tag) and just update log_abs_lift per candidate.
+                # We reuse rows_eval0/rows_train0 but overwrite the lift-related fields on copies.
+
+                best_beta2 = 0.0
+                best_beta3 = 0.0
+                best_c_beta = 0.0
+                best_L = float("inf")
+
+                # Cache factorization exponents per row: for max_power<=3, lift log depends only on counts of e=1,2,3.
+                exp_counts: dict[int, tuple[int, int, int]] = {}
+                for r in rows_eval0:
+                    f = _prime_factorization(int(r.n))
+                    c1 = 0
+                    c2 = 0
+                    c3 = 0
+                    for _p, e in f.items():
+                        e = int(e)
+                        if e == 1:
+                            c1 += 1
+                        elif e == 2:
+                            c2 += 1
+                        elif e == 3:
+                            c3 += 1
+                    exp_counts[int(r.n)] = (c1, c2, c3)
+
+                def rows_for(beta2: float, beta3: float) -> tuple[list[NRow], list[NRow]]:
+                    Acoeff = _Acoeff_from_betas(0.0, float(beta2), float(beta3))
+                    # Compute per-exponent logs once.
+                    floor = max(min_abs, 1e-300)
+                    logA = {
+                        1: _safe_log_abs(float(Acoeff[1]), floor=floor),
+                        2: _safe_log_abs(float(Acoeff[2]), floor=floor),
+                        3: _safe_log_abs(float(Acoeff[3]), floor=floor),
+                    }
+                    rows_eval: list[NRow] = []
+                    for r in rows_eval0:
+                        c1, c2, c3 = exp_counts[int(r.n)]
+                        log_lift = float(c1) * float(logA[1]) + float(c2) * float(logA[2]) + float(c3) * float(logA[3])
+                        # Keep raw lift_a for min_abs filtering: approximate from exp counts.
+                        lift_a = float((Acoeff[1] ** c1) * (Acoeff[2] ** c2) * (Acoeff[3] ** c3))
+                        rows_eval.append(
+                            NRow(
+                                n=int(r.n),
+                                cls=str(r.cls),
+                                Omega_total=int(r.Omega_total),
+                                primeset_tag=str(r.primeset_tag),
+                                emp_A=float(r.emp_A),
+                                lift_a=float(lift_a),
+                                log_abs_emp=float(r.log_abs_emp),
+                                log_abs_lift=float(log_lift),
+                            )
+                        )
+                    rows_train = [rr for rr in rows_eval if rr.primeset_tag == "train"]
+                    return rows_eval, rows_train
+
+                for b2 in beta2_vals:
+                    for b3 in beta3_vals:
+                        rows_eval_b, rows_train_b = rows_for(float(b2), float(b3))
+
+                        # Fit c (or use fixed) at b=0.
+                        if math.isfinite(c_fixed):
+                            cand_cs = [float(c_fixed)]
+                        else:
+                            cand_cs = _best_c_candidates(rows_train_b, b=0.0, min_abs=min_abs)
+                        for c in cand_cs:
+                            L = _objective(rows_train_b, b=0.0, c=float(c), min_abs=min_abs, lam_pp=lam_pp, mu_mix=mu_mix)
+                            if L < best_L:
+                                best_L = float(L)
+                                best_beta2 = float(b2)
+                                best_beta3 = float(b3)
+                                best_c_beta = float(c)
+
+                rows_eval_best, rows_train_best = rows_for(float(best_beta2), float(best_beta3))
+
+                # Custom record with beta2/beta3.
+                def record_two_tier(model: str, beta2: float, beta3: float, c: float) -> None:
+                    train_E_sf, train_E_pp, train_E_mix = _error_medians(rows_train_best, b=0.0, c=c, min_abs=min_abs)
+                    train_L = _objective(rows_train_best, b=0.0, c=c, min_abs=min_abs, lam_pp=lam_pp, mu_mix=mu_mix)
+
+                    eval_E_sf, eval_E_pp, eval_E_mix = _error_medians(rows_eval_best, b=0.0, c=c, min_abs=min_abs)
+                    eval_L = _objective(rows_eval_best, b=0.0, c=c, min_abs=min_abs, lam_pp=lam_pp, mu_mix=mu_mix)
+
+                    hold_E_sf, hold_E_pp, hold_E_mix = _error_medians(rows_eval_best, b=0.0, c=c, min_abs=min_abs, holdout_only=True)
+                    hold_L = _objective(rows_eval_best, b=0.0, c=c, min_abs=min_abs, lam_pp=lam_pp, mu_mix=mu_mix, holdout_only=True)
+
+                    newprime_rows = [r for r in rows_eval_best if r.primeset_tag == "newprime"]
+                    newp_E_sf, newp_E_pp, newp_E_mix = _error_medians(newprime_rows, b=0.0, c=c, min_abs=min_abs)
+                    newp_L = _objective(newprime_rows, b=0.0, c=c, min_abs=min_abs, lam_pp=lam_pp, mu_mix=mu_mix)
+
+                    out_rows.append(
+                        FitResult(
+                            u=float(u),
+                            model=str(model),
+                            ghost_beta_mode=str(beta_mode),
+                            beta=float(beta3),
+                            beta2=float(beta2),
+                            beta3=float(beta3),
+                            b=0.0,
+                            c=float(c),
+                            train_E_sf=float(train_E_sf),
+                            train_E_pp=float(train_E_pp),
+                            train_E_mix=float(train_E_mix),
+                            train_L=float(train_L),
+                            eval_E_sf=float(eval_E_sf),
+                            eval_E_pp=float(eval_E_pp),
+                            eval_E_mix=float(eval_E_mix),
+                            eval_L=float(eval_L),
+                            holdout_E_sf=float(hold_E_sf),
+                            holdout_E_pp=float(hold_E_pp),
+                            holdout_E_mix=float(hold_E_mix),
+                            holdout_L=float(hold_L),
+                            newprime_E_sf=float(newp_E_sf),
+                            newprime_E_pp=float(newp_E_pp),
+                            newprime_E_mix=float(newp_E_mix),
+                            newprime_L=float(newp_L),
+                        )
+                    )
+
+                record_two_tier("beta23_plus_c", beta2=float(best_beta2), beta3=float(best_beta3), c=float(best_c_beta))
 
         print(
             f"u={u:.2f} gate_devI_med={gen_dev_med:.3f} "
