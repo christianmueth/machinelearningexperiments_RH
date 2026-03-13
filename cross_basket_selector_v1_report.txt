@@ -1,6 +1,0 @@
-Cross-basket selector_v1 report
-Families evaluated: 6
-High-confidence: runs_deform_bottomzoom_2048_4096
-Support-limited: runs_discovery_candidate1_bfrac0p1_edge80, runs_discovery_candidate1_bfrac0p1, runs_discovery_candidate1_bfrac0p1_edge80_ext, runs_promote_top1_eta1_dual_512_1024, runs_deform_bottomzoom_1024_2048
-Fooled by plausible synthetics (top10): runs_deform_bottomzoom_2048_4096, runs_discovery_candidate1_bfrac0p1_edge80, runs_discovery_candidate1_bfrac0p1, runs_discovery_candidate1_bfrac0p1_edge80_ext, runs_promote_top1_eta1_dual_512_1024, runs_deform_bottomzoom_1024_2048
-Dominant signals: {'generic-only': 5, 'symmetry-dominant': 1}

@@ -13,7 +13,6 @@ This is a compact, copy/paste-friendly packet you can give another GPT.
 
 - Scan root: `out_phase3B_preregistered_uniqueness_64_127_v2`
   - prereg digest: `4f19febe1d28f72f` (see `preregistration_digest.txt`)
-  - summary: `STAGE_GATE_SUMMARY_v2.md`
   - KPI table: `kpi_fraction.csv`
 - Confirm root: `out_phase3B_confirm_preregistered_uniqueness_rejecting_seeds_N16384_v2`
 
@@ -25,7 +24,6 @@ Headline KPI (from `kpi_fraction.csv`):
 
 - Scan root: `out_phase3B_preregistered_uniqueness_64_127_v5`
   - prereg digest: `da3663ff6d51c570`
-  - summary: `STAGE_GATE_SUMMARY_v5.md`
   - KPI table: `kpi_fraction.csv`
 - Confirm root used for the v5 scan hit followup (actually v4 hit inside the v5 scan):
   - `out_phase3B_confirm_preregistered_uniqueness_rejecting_seeds_N16384_v5scan/raw.csv`

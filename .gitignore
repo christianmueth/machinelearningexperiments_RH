@@ -14,6 +14,9 @@ out/
 out_*/
 runs/
 runs_*/
+doc_extract/
+cross_basket_selector_v1_report.json
+cross_basket_selector_v1_report.txt
 
 # Common large/binary artifacts (keep repo lean)
 *.csv

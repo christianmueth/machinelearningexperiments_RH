@@ -1,16 +1,67 @@
 # machinelearningexperiments_RH
 
-This repository contains the RH/Experiment-E proof package notes, the frozen run protocol, and the code/configs used to generate the numerical *witness* artifacts.
+This repository is the working proof-and-architecture package for a dyadic/Euler determinant program aimed at building a completed global analytic object from a structured spectral backend. In the current state of the project, the repository serves three roles at once:
 
-Inductive bias research:
+- a proof-navigation and obligation-tracking workspace for the RH/scattering program,
+- a reproducible numerical witness package for the frozen anchored pipeline,
+- and a machine-learning inductive-bias testbed built around that pipeline as a frozen structured oracle.
 
-spectral stability bias	- uncommon
+At a high level, the architecture described in [RH Architecture.pdf](RH%20Architecture.pdf) is:
 
-determinant-level invariants	- very uncommon
+`dyadic anchor -> dyadic tower -> ghost coordinates -> Euler/multiplicative lift -> corrected local coefficients -> prime-local packet realization -> determinant assembly -> anchored centered-even completion -> completed analytic object -> FE/zero/rigidity probes`
 
-cross-resolution operator tests	- rare
+The companion note [Machine learning wRH.pdf](Machine%20learning%20wRH.pdf) reframes that same stack as a reasoning prior rather than only a proof engine: a latent structured world model with a global consistency score, suitable for reranking or constraining language-guided reasoning while keeping the mathematical core frozen.
 
-operator-based diagnostics	- emerging research area
+Inductive-bias themes represented in the repo:
+
+- spectral stability bias
+- determinant-level global invariants
+- primitive-vs-composite factor structure
+- cross-resolution/operator-consistency checks
+- operator-based diagnostics as reasoning supervision
+
+## What this repository is actually trying to build
+
+The central object is not a raw Dirichlet series assembled term-by-term. The architecture instead starts from a dyadic spectral anchor, passes through an additive ghost representation and an Euler-style multiplicative lift, realizes the resulting local arithmetic data through small spectral packet models, and then assembles a determinant-based completed object whose behavior is studied through functional-equation, zero-tracking, rigidity, and stability probes.
+
+In the language of the PDF architecture note, the repo is organized around four interacting layers:
+
+1. Dyadic generator layer.
+	A local anchor matrix supplies the primitive normalization and the dyadic `2^k` tower grammar from which the rest of the arithmetic structure is grown.
+2. Arithmetic lift layer.
+	Ghost coordinates and Euler-style transforms convert the dyadic seed into multiplicative local data, followed by correction and calibration of the low-order coefficients used downstream.
+3. Spectral realization layer.
+	Prime-local packet models realize the corrected local data as concrete low-dimensional spectral objects.
+4. Global analytic layer.
+	The packet family is assembled into a determinant-like global object, then completed with an anchored centered-even correction so that FE-like and transverse geometric diagnostics can be measured on a stable completed object.
+
+## Current status in one page
+
+What is already established in the repository, at the level of architecture plus numerical witness evidence:
+
+- a coherent dyadic-to-ghost-to-Euler pipeline exists and has been frozen into reproducible artifacts,
+- corrected local coefficient tables can be extracted and reused without regenerating the backend,
+- prime-local spectral packet realizations exist for those corrected coefficients,
+- the assembled determinant object exhibits FE-like symmetry diagnostics, stable zero-candidate structure, and rigidity/stability observables,
+- the architecture cleanly separates structural/operator statements from the remaining analytic identification obligations.
+
+What is not yet claimed as proved, and is treated honestly as open in the project notes:
+
+- exact equality with the classical Euler product,
+- exact Mangoldt/log-derivative identity,
+- equality with the Riemann zeta function or modular scattering determinant,
+- a theorem that all zeros of the constructed global object lie on the critical line.
+
+That distinction matters: the repo is strongest today as a structural architecture plus witness framework, not as a completed theorem package.
+
+## PDF-guided architecture summary
+
+The two root PDFs are useful as high-level summaries of what the codebase is doing and why.
+
+- [RH Architecture.pdf](RH%20Architecture.pdf) describes the full mathematical stack from the original dyadic anchor through determinant assembly and completed-object probes. It emphasizes that the key conceptual move is the additive ghost representation followed by the Euler lift, and that the completed object is a hybrid arithmetic-spectral determinant rather than a conventional directly-written Dirichlet series.
+- [Machine learning wRH.pdf](Machine%20learning%20wRH.pdf) interprets the same stack as a structured latent prior for AI systems: local packets become latent realizers, the determinant/completion layer becomes a global coherence score, and the frozen anchored pipeline becomes a scientific oracle that should guide reasoning rather than be overwritten by gradient updates.
+
+## Start here
 
 ## Start here
 
@@ -38,6 +89,7 @@ operator-based diagnostics	- emerging research area
 ## AI/AGI abstraction (RAA)
 
 - Refinement-with-Admissibility Architecture (RAA): stable refinement systems + ghost diagnostics, grounded in the repo’s methodology firewall and admissibility engine: [RAA_REFINEMENT_WITH_ADMISSIBILITY_ARCHITECTURE.md](RAA_REFINEMENT_WITH_ADMISSIBILITY_ARCHITECTURE.md)
+- Frozen-oracle reasoning-model spec: a concrete ML design that treats the current RH/scattering stack as a fixed structured consistency prior for language-guided reasoning: [notes/FROZEN_ORACLE_REASONING_MODEL_SPEC.md](notes/FROZEN_ORACLE_REASONING_MODEL_SPEC.md)
 
 ## Evidence packets (human-readable summaries)
 
@@ -54,7 +106,7 @@ operator-based diagnostics	- emerging research area
 
 ## Current architecture
 
-The active RH assembly pipeline in this repository is organized as a frozen backend plus a canonical frontend and completed-object analysis layer.
+The active RH assembly pipeline in this repository is organized as a frozen backend plus a canonical frontend and completed-object analysis layer. This is the operational version of the broader architecture summarized in [RH Architecture.pdf](RH%20Architecture.pdf).
 
 1. Frozen backend coefficients.
 	The arithmetic side is treated as fixed input once corrected coefficients have been extracted. The canonical table is `out/corrected_factor_injection_beta23_window_coefficients.csv`, and `tools/corrected_backend_interface.py` is the narrow loader that exposes `u`, `beta2`, `beta3`, `c`, and the corrected local coefficients `A1_star`, `A2_star`, `A3_star`.
@@ -79,6 +131,37 @@ The active RH assembly pipeline in this repository is organized as a frozen back
 	The backend is intentionally not regenerated during frontend/completion experiments. The default analytic operating point is `u=0.24`, the frontend default is `A3_exact_frontend`, and completion experiments are evaluated against the persistent zero cluster near `t≈27.85..28.05`.
 
 In short: the repo’s current numerical architecture is `corrected coefficient table -> constrained A3 frontend packets -> global determinant assembly -> anchored even completion -> FE/zero diagnostics`.
+
+## ML interpretation of the same architecture
+
+The machine-learning direction in this repo does not treat the RH/scattering stack as a trainable neural network. Following [Machine learning wRH.pdf](Machine%20learning%20wRH.pdf), it treats the anchored pipeline as a frozen structured oracle with three conceptual layers:
+
+1. Language layer.
+	A conventional encoder or LLM handles problem text and candidate reasoning traces.
+2. Structured latent layer.
+	The dyadic backend, corrected coefficients, local packets, and completion settings define a latent world model with explicit factorization and spectral structure.
+3. Global consistency layer.
+	Oracle summaries derived from determinant assembly, FE stability, zero structure, and related probes act as a coherence signal for reranking or controlling reasoning.
+
+The implementation rule is deliberate: learn around the oracle, not through it. The PDFs argue for the following guardrails, which the repo now follows:
+
+- keep the anchored backend frozen,
+- never backpropagate into the mathematical oracle,
+- keep oracle outputs interpretable and versioned,
+- compare every learned component against a no-oracle baseline,
+- use the oracle as structured supervision for consistency, not as a raw text target.
+
+That design is documented concretely in [notes/FROZEN_ORACLE_REASONING_MODEL_SPEC.md](notes/FROZEN_ORACLE_REASONING_MODEL_SPEC.md).
+
+## Suggested reading order
+
+If you are new to the repository, the most efficient sequence is:
+
+1. Read this README for the system-level map.
+2. Read [RH Architecture.pdf](RH%20Architecture.pdf) for the end-to-end mathematical architecture.
+3. Read [notes/proof_roadmap.md](notes/proof_roadmap.md) and [REMAINING_OBLIGATIONS.md](REMAINING_OBLIGATIONS.md) to separate established structure from open analytic hinges.
+4. Read [Machine learning wRH.pdf](Machine%20learning%20wRH.pdf) and [notes/FROZEN_ORACLE_REASONING_MODEL_SPEC.md](notes/FROZEN_ORACLE_REASONING_MODEL_SPEC.md) if you care about the inductive-bias / reasoning-model direction.
+5. Use the `tools/` drivers and `out/` artifacts to inspect the frozen anchored operating point directly.
 
 ## Outputs
 
