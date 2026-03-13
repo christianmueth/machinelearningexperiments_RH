@@ -10,7 +10,39 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-import phase3e_elambda_loop_suite as s
+
+def find_npz_files(src_root: str) -> list[str]:
+    hits: list[str] = []
+    for root, _dirs, files in os.walk(src_root):
+        for name in files:
+            if name.startswith("channel_diag") and name.endswith(".npz"):
+                hits.append(os.path.join(root, name))
+    return sorted(hits)
+
+
+def parse_rel_metadata(path: str, src_root: str) -> Tuple[str, str, int, int, float, float]:
+    rel = os.path.relpath(path, src_root).replace("\\", "/")
+    parts = rel.split("/")
+    backend_label = parts[0].replace("backend_", "") if parts else ""
+    seed = -1
+    anchor = -1
+    wlo = float("nan")
+    whi = float("nan")
+    for part in parts:
+        if part.startswith("seed") and "_anchor" in part:
+            seed_part, anchor_part = part.split("_anchor")
+            seed = int(seed_part.replace("seed", ""))
+            anchor = int(anchor_part)
+        if part.startswith("window_"):
+            window_part = part.replace("window_", "")
+            wlo_str, whi_str = window_part.split("_", 1)
+            wlo = float(wlo_str)
+            whi = float(whi_str)
+    return rel, backend_label, seed, anchor, wlo, whi
+
+
+def key_for_pair(seed: int, anchor: int, wlo: float, whi: float) -> Tuple[int, int, float, float]:
+    return int(seed), int(anchor), float(wlo), float(whi)
 
 
 def load_pairs(pairs_csv: str) -> Iterable[Tuple[int, int, float, float]]:
@@ -29,13 +61,13 @@ def load_pairs(pairs_csv: str) -> Iterable[Tuple[int, int, float, float]]:
 
 
 def build_map(src_root: str) -> Dict[Tuple[int, int, float, float], str]:
-    files = s.find_npz_files(src_root)
+    files = find_npz_files(src_root)
     if not files:
         raise SystemExit(f"No channel_diag*.npz under {src_root}")
     out: Dict[Tuple[int, int, float, float], str] = {}
     for p in files:
-        _rel, _backend, seed, anchor, wlo, whi = s.parse_rel_metadata(p, src_root)
-        out[s.key_for_pair(seed, anchor, wlo, whi)] = p
+        _rel, _backend, seed, anchor, wlo, whi = parse_rel_metadata(p, src_root)
+        out[key_for_pair(seed, anchor, wlo, whi)] = p
     return out
 
 
@@ -62,7 +94,7 @@ def main() -> None:
     copied = 0
     missing = 0
     for (seed, anchor, wlo, whi) in load_pairs(str(args.pairs_csv)):
-        kk = s.key_for_pair(seed, anchor, wlo, whi)
+        kk = key_for_pair(seed, anchor, wlo, whi)
         p = mp.get(kk)
         if p is None:
             missing += 1

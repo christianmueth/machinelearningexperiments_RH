@@ -93,7 +93,7 @@ The two root PDFs are useful as high-level summaries of what the codebase is doi
 
 ## Evidence packets (human-readable summaries)
 
-- Results packets: [RESULTS_PACKET_2026-01-29.md](RESULTS_PACKET_2026-01-29.md), [RESULTS_PACKET_2026-01-30.md](RESULTS_PACKET_2026-01-30.md), [RESULTS_PACKET_2026-01-31.md](RESULTS_PACKET_2026-01-31.md)
+- Results packet: [RESULTS_PACKET_2026-01-29.md](RESULTS_PACKET_2026-01-29.md)
 - Lemma-chain summary: [LEMMA_CHAIN_SUMMARY.md](LEMMA_CHAIN_SUMMARY.md)
 - Theorem/proof roadmap overview: [THEOREM_ROADMAP.md](THEOREM_ROADMAP.md)
 
