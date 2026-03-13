@@ -54,6 +54,19 @@ What is not yet claimed as proved, and is treated honestly as open in the projec
 
 That distinction matters: the repo is strongest today as a structural architecture plus witness framework, not as a completed theorem package.
 
+## Final validation before AI/ML use
+
+The repo now has a short final validation note for the frozen anchored pipeline: [notes/FROZEN_ORACLE_SANITY_SHEET.md](notes/FROZEN_ORACLE_SANITY_SHEET.md).
+
+That note documents four minimal pre-ML checks:
+
+- Euler-style closure improvement on the strongest frozen corrected artifact,
+- Mangoldt/log-derivative improvement of the accepted `A3_exact_frontend` versus the main baselines,
+- critical-line recentering of the persistent `t≈28` zero-candidate cluster under the anchored completion,
+- and local stability of exported oracle features across nearby operating points.
+
+The practical conclusion is narrow but useful: the current anchored architecture is validated well enough to serve as a frozen structured oracle or inductive bias for AI/ML experiments. The note also restates the project’s open boundaries explicitly: no theorem is claimed here for exact Euler-product identity, exact Mangoldt identity, equality with zeta/classical scattering, or universal critical-line location of zeros.
+
 ## PDF-guided architecture summary
 
 The two root PDFs are useful as high-level summaries of what the codebase is doing and why.
