@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import re
 from pathlib import Path
 
 import numpy as np
 
 from .frozen_oracle_client import AnchoredOracleClient
 from .oracle_schema import AnchoredOracleQuery, CandidateTrace, ReasoningExample
+from .text_encoders import TextEncoder, build_text_encoder
 from .translator import HeuristicAnchoredTranslator
 
 
@@ -53,22 +52,6 @@ def load_reasoning_examples(path: str | Path) -> list[ReasoningExample]:
     return examples
 
 
-def hashed_text_embedding(text: str, *, dim: int) -> np.ndarray:
-    vec = np.zeros((int(dim),), dtype=np.float64)
-    tokens = re.findall(r"[a-z0-9_]+", text.lower())
-    if not tokens:
-        return vec
-    for token in tokens:
-        digest = hashlib.sha256(token.encode("utf-8")).digest()
-        idx = int.from_bytes(digest[:4], byteorder="little", signed=False) % int(dim)
-        sign = 1.0 if (digest[4] % 2 == 0) else -1.0
-        vec[idx] += sign
-    norm = np.linalg.norm(vec)
-    if norm > 0.0:
-        vec /= norm
-    return vec
-
-
 def materialize_dataset(
     examples: list[ReasoningExample],
     *,
@@ -77,10 +60,19 @@ def materialize_dataset(
     text_dim: int = 256,
     feature_mode: str = "text+oracle",
     oracle_feature_groups: tuple[str, ...] | list[str] | None = None,
+    text_encoder_name: str = "hashed",
+    hf_model: str = "",
+    hf_max_length: int = 256,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     feature_mode = str(feature_mode).strip().lower()
     if feature_mode not in {"text", "oracle", "text+oracle"}:
         raise ValueError("feature_mode must be one of: text, oracle, text+oracle")
+    text_encoder: TextEncoder = build_text_encoder(
+        text_encoder=str(text_encoder_name),
+        text_dim=int(text_dim),
+        hf_model=str(hf_model),
+        max_length=int(hf_max_length),
+    )
     rows: list[np.ndarray] = []
     labels: list[float] = []
     groups: list[int] = []
@@ -91,7 +83,7 @@ def materialize_dataset(
                 oracle_vec = client.oracle_vector(query, feature_groups=oracle_feature_groups)
             else:
                 oracle_vec = np.asarray(candidate.oracle_features, dtype=np.float64)
-            text_vec = hashed_text_embedding(f"{example.prompt} {candidate.text}", dim=int(text_dim))
+            text_vec = text_encoder.encode(f"{example.prompt} {candidate.text}")
             if feature_mode == "text":
                 row = text_vec
             elif feature_mode == "oracle":
@@ -101,8 +93,9 @@ def materialize_dataset(
             rows.append(np.asarray(row, dtype=np.float64))
             labels.append(float(candidate.label))
             groups.append(int(group_index))
+    output_dim = int(text_encoder.output_dim)
     return (
-        np.vstack(rows).astype(np.float64) if rows else np.zeros((0, int(text_dim)), dtype=np.float64),
+        np.vstack(rows).astype(np.float64) if rows else np.zeros((0, output_dim), dtype=np.float64),
         np.asarray(labels, dtype=np.float64),
         np.asarray(groups, dtype=np.int64),
     )

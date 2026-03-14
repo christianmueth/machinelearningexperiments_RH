@@ -1,0 +1,58 @@
+experiment_name: anchored_oracle_reranker_mvp
+
+oracle:
+  pipeline_tag: anchored_a3_v1
+  default_u: 0.24
+  sigma_mode: anchored_default
+  cluster_window: canonical_t28
+  include_perturbation_features: true
+  feature_groups:
+    - closure
+    - spectral
+    - global
+    - stability
+
+training:
+  dataset: ai/datasets/templates/reasoning_rerank_template.jsonl
+  out_model: out/ai/reranker_text_oracle.npz
+  feature_mode: text+oracle
+  text_encoder: hashed
+  text_dim: 256
+  hf_model: ""
+  hf_max_length: 256
+  hidden_dim: 64
+  epochs: 100
+  lr: 0.01
+  weight_decay: 0.0001
+  seed: 0
+
+baselines:
+  - text
+  - oracle
+  - text+oracle
+
+metrics:
+  - top1_accuracy
+  - mrr
+  - ndcg
+
+dataset_prep:
+  script: ai/scripts/prepare_reasoning_dataset.py
+  example_hf_dataset: gsm8k
+  example_hf_subset: main
+  example_hf_split: train
+  example_prompt_field: question
+  example_answer_field: answer
+
+recommended_backbones:
+  - distilbert-base-uncased
+  - microsoft/phi-3-mini
+  - mistralai/Mistral-7B-v0.1
+  - meta-llama
+
+notes:
+  - Keep the backend, frontend, completion, and oracle artifacts frozen.
+  - Compare every learned system against a no-oracle baseline.
+  - Do not treat this config as permission to train a full LLM from scratch.
+  - DistilBERT is the validated frozen-encoder path in the current Windows venv.
+  - Phi-3 Mini downloaded successfully in this environment but crashed during model load, so it remains optional rather than the default.

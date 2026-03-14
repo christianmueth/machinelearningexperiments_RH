@@ -103,6 +103,7 @@ The two root PDFs are useful as high-level summaries of what the codebase is doi
 
 - Refinement-with-Admissibility Architecture (RAA): stable refinement systems + ghost diagnostics, grounded in the repo’s methodology firewall and admissibility engine: [RAA_REFINEMENT_WITH_ADMISSIBILITY_ARCHITECTURE.md](RAA_REFINEMENT_WITH_ADMISSIBILITY_ARCHITECTURE.md)
 - Frozen-oracle reasoning-model spec: a concrete ML design that treats the current RH/scattering stack as a fixed structured consistency prior for language-guided reasoning: [notes/FROZEN_ORACLE_REASONING_MODEL_SPEC.md](notes/FROZEN_ORACLE_REASONING_MODEL_SPEC.md)
+- Practical AI workspace for datasets, benchmarks, and reranker experiments around the frozen oracle: [ai/README.md](ai/README.md)
 
 ## Evidence packets (human-readable summaries)
 

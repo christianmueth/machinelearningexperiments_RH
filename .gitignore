@@ -49,3 +49,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# AI workspace generated datasets
+ai/datasets/raw/
+ai/datasets/processed/

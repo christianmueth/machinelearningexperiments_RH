@@ -112,8 +112,61 @@ def group_accuracy(scores: np.ndarray, labels: np.ndarray, group_ids: np.ndarray
         idx = np.flatnonzero(group_ids == int(group))
         if idx.size == 0:
             continue
-        pred = idx[int(np.argmax(scores[idx]))]
+        pred = _stable_desc_order(scores, idx)[0]
         gold = idx[int(np.argmax(labels[idx]))]
         correct += int(pred == gold)
         total += 1
     return float(correct) / float(total) if total else 0.0
+
+
+def _stable_desc_order(values: np.ndarray, idx: np.ndarray) -> np.ndarray:
+    local = np.asarray(values[idx], dtype=np.float64)
+    order = np.argsort(-local, kind="mergesort")
+    return idx[order]
+
+
+def mean_reciprocal_rank(scores: np.ndarray, labels: np.ndarray, group_ids: np.ndarray) -> float:
+    scores = np.asarray(scores, dtype=np.float64)
+    labels = np.asarray(labels, dtype=np.float64)
+    group_ids = np.asarray(group_ids, dtype=np.int64)
+    reciprocal_ranks: list[float] = []
+    for group in np.unique(group_ids):
+        idx = np.flatnonzero(group_ids == int(group))
+        if idx.size == 0:
+            continue
+        order = _stable_desc_order(scores, idx)
+        positives = np.flatnonzero(labels[order] > 0.5)
+        if positives.size == 0:
+            reciprocal_ranks.append(0.0)
+            continue
+        reciprocal_ranks.append(1.0 / float(int(positives[0]) + 1))
+    return float(np.mean(reciprocal_ranks)) if reciprocal_ranks else 0.0
+
+
+def ndcg_at_k(scores: np.ndarray, labels: np.ndarray, group_ids: np.ndarray, *, k: int | None = None) -> float:
+    scores = np.asarray(scores, dtype=np.float64)
+    labels = np.asarray(labels, dtype=np.float64)
+    group_ids = np.asarray(group_ids, dtype=np.int64)
+    ndcgs: list[float] = []
+    for group in np.unique(group_ids):
+        idx = np.flatnonzero(group_ids == int(group))
+        if idx.size == 0:
+            continue
+        limit = idx.size if k is None else max(1, min(int(k), int(idx.size)))
+        pred_order = _stable_desc_order(scores, idx)[:limit]
+        ideal_order = _stable_desc_order(labels, idx)[:limit]
+        gains = np.power(2.0, labels[pred_order]) - 1.0
+        ideal_gains = np.power(2.0, labels[ideal_order]) - 1.0
+        discounts = 1.0 / np.log2(np.arange(2, limit + 2, dtype=np.float64))
+        dcg = float(np.sum(gains * discounts))
+        idcg = float(np.sum(ideal_gains * discounts))
+        ndcgs.append(dcg / idcg if idcg > 0.0 else 0.0)
+    return float(np.mean(ndcgs)) if ndcgs else 0.0
+
+
+def ranking_metrics(scores: np.ndarray, labels: np.ndarray, group_ids: np.ndarray) -> dict[str, float]:
+    return {
+        "group_accuracy": group_accuracy(scores, labels, group_ids),
+        "mrr": mean_reciprocal_rank(scores, labels, group_ids),
+        "ndcg": ndcg_at_k(scores, labels, group_ids),
+    }
