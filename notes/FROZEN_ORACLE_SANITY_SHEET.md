@@ -14,16 +14,16 @@ This note records the final minimal validation pass for the frozen anchored RH/s
 
 ### Test A. Euler-style closure validation
 
-Interpretation: pass on the stronger frozen `beta23_plus_c` artifact; partial on the fresh generic `c_plus_bOmega` sweep.
+Interpretation: pass on the canonical frozen `beta23_plus_c` artifact. The fresh generic `c_plus_bOmega` sweep is retained only as a noncanonical exploratory comparison.
 
-Fresh generic closure rerun:
+Noncanonical generic comparison:
 
 - Artifact: `out/final_validation_closure.csv`
 - Best generic corrected model by total loss: `c_plus_bOmega`
 - Median eval comparison versus `none`:
   - `eval_E_sf`: `0.161254` vs `0.954558` for the stronger frozen run, but on the fresh rerun the corrected model improves squarefree and mixed terms while not beating baseline on prime-power error.
   - holdout behavior is similar: better squarefree, better mixed, better total loss, but not better prime-power.
-- Conclusion: the fresh minimal generic fit shows coherent improvement but does not by itself satisfy the strictest all-metrics Euler pass condition.
+- Conclusion: the fresh minimal generic fit shows coherent improvement, but it is not the canonical frozen backend and does not by itself satisfy the strictest all-metrics Euler pass condition.
 
 Frozen stronger closure artifact:
 
@@ -37,11 +37,22 @@ Frozen stronger closure artifact:
   - `none`: `holdout_E_sf=1.043889`, `holdout_E_pp=2.065819`, `holdout_E_mix=2.499357`, `holdout_L=4.359386`
 - Conclusion: on the frozen `beta23_plus_c` comparison, the corrected model beats the uncorrected baseline on all three requested closure components and on total loss, on both eval and holdout.
 
+Why this is the canonical result:
+
+- `beta23_plus_c` is the accepted two-tier ghost-depth correction, not a posthoc multiplicity penalty,
+- it corrects the dyadic ghost tower upstream of the Euler lift via separate `beta2` and `beta3` parameters,
+- and it is the exact correction family frozen into `out/corrected_factor_injection_beta23_window_coefficients.csv` and consumed by the downstream packet/frontend pipeline.
+
 What this validates:
 
 - the frozen arithmetic correction materially improves Euler-style closure diagnostics,
 - the improvement is not limited to one metric family,
 - and the corrected arithmetic layer is strong enough to serve as a frozen prior for downstream oracle features.
+
+Canonicality note:
+
+- the repo's frozen arithmetic interface is the `beta23` interface,
+- the generic `c_only`, `bOmega_only`, and `c_plus_bOmega` families are exploratory only and are not part of the canonical frozen stack.
 
 What this does not validate:
 

@@ -105,6 +105,18 @@ The two root PDFs are useful as high-level summaries of what the codebase is doi
 - Frozen-oracle reasoning-model spec: a concrete ML design that treats the current RH/scattering stack as a fixed structured consistency prior for language-guided reasoning: [notes/FROZEN_ORACLE_REASONING_MODEL_SPEC.md](notes/FROZEN_ORACLE_REASONING_MODEL_SPEC.md)
 - Practical AI workspace for datasets, benchmarks, and reranker experiments around the frozen oracle: [ai/README.md](ai/README.md)
 
+## Beta23 Canonical Backend
+
+The repo's arithmetic backend is frozen around the `beta23` two-tier ghost correction, not around the generic closure-bias families.
+
+The practical distinction is:
+
+- generic models such as `c_only`, `bOmega_only`, and `c_plus_bOmega` are exploratory closure surrogates that act after the lift at the level of log-magnitude bias,
+- the canonical `beta23_plus_c` path corrects the dyadic ghost tower itself before the Euler transform, using separate `beta2` and `beta3` parameters,
+- and the resulting corrected coefficients are what get frozen into [out/corrected_factor_injection_beta23_window_coefficients.csv](out/corrected_factor_injection_beta23_window_coefficients.csv).
+
+That structural distinction is documented in [notes/BETA23_BACKEND_STRUCTURE.md](notes/BETA23_BACKEND_STRUCTURE.md). In short: `beta23` is not just a better generic fit; it is the upstream correction family that the frozen coefficient table, the accepted frontend probes, and the final sanity-sheet closure pass are all built around.
+
 ## Evidence packets (human-readable summaries)
 
 - Results packet: [RESULTS_PACKET_2026-01-29.md](RESULTS_PACKET_2026-01-29.md)

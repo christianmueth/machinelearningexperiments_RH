@@ -243,6 +243,8 @@ def main() -> int:
             "Fit minimal log-bias corrections for the ghost/Euler lifted model under the frozen 'p' coordinate.\n\n"
             "Frozen arithmetic: X-semigroup composition, V(n)=log|det(I-S_n)|, empirical A_emp via Dirichlet primitive.\n"
             "Lift: dyadic ghost g_m = V(2^m) (aggregate_as_ghost) -> Euler-transform coefficients A_k -> multiplicative a_n.\n\n"
+            "Canonical repo note: the frozen arithmetic backend is the two-tier ghost-depth family `step_m_eq2_and_m_ge3`, which yields the downstream `beta23_plus_c` fit and the frozen beta23 coefficient table. "
+            "The generic `c_only`, `bOmega_only`, and `c_plus_bOmega` models remain useful as exploratory ablations, but they are not the canonical backend.\n\n"
             "We fit the smallest correction families on a training prime set (default <=17):\n"
             "  (1) log|a*_n| = log|a_n| - c\n"
             "  (2) log|a*_n| = log|a_n| - c - b*Omega_total(n)\n\n"
@@ -294,7 +296,8 @@ def main() -> int:
             "Optional ghost-depth correction family applied before Euler transform: "
             "g*_m = g_m - beta*h(m), where h(m)=1_{m>=2} for step_m_ge2 or h(m)=(m-1) for linear_m_minus1. "
             "For step_m_eq2_and_m_ge3, we use g*_m = g_m - beta2*1_{m=2} - beta3*1_{m>=3}. "
-            "This keeps p/ghost_mode/observable/geometry frozen while testing tower-depth distortion corrections."
+            "This keeps p/ghost_mode/observable/geometry frozen while testing tower-depth distortion corrections. "
+            "The canonical frozen-backend family is step_m_eq2_and_m_ge3; the other choices are exploratory ablations."
         ),
     )
     ap.add_argument("--beta_min", type=float, default=-2.0)
@@ -325,7 +328,8 @@ def main() -> int:
         default=float("nan"),
         help=(
             "If set to a finite number, forces a constant beta across the whole u-window (no per-u refit of beta). "
-            "Use with --ghost_beta_mode != none. Example: --beta_fixed 0.82"
+            "Use with --ghost_beta_mode != none. This is mainly for exploratory ablations rather than the canonical frozen beta23 path. "
+            "Example: --beta_fixed 0.82"
         ),
     )
     ap.add_argument(
