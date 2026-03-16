@@ -32,6 +32,24 @@ class CandidateTrace:
 
 
 @dataclass(frozen=True)
+class ReasoningState:
+    step_index: int
+    source_text: str
+    quantities: tuple[float, ...] = ()
+    operation: str = "observe"
+    operands: tuple[float, ...] = ()
+    result: float | None = None
+    equation_text: str = ""
+    equation_correct: bool | None = None
+    answer_support: bool = False
+    contains_approx_language: bool = False
+    dependency_step_indexes: tuple[int, ...] = ()
+    dependency_values: tuple[float, ...] = ()
+    introduced_values: tuple[float, ...] = ()
+    carried_result: bool = False
+
+
+@dataclass(frozen=True)
 class ReasoningExample:
     problem_id: str
     prompt: str

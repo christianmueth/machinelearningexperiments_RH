@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +10,15 @@ from .frozen_oracle_client import AnchoredOracleClient
 from .oracle_schema import AnchoredOracleQuery, CandidateTrace, ReasoningExample
 from .text_encoders import TextEncoder, build_text_encoder
 from .translator import HeuristicAnchoredTranslator
+
+
+def _local_path(path: str | Path) -> Path:
+    resolved = Path(path)
+    if sys.platform == "win32":
+        raw = str(resolved)
+        if not raw.startswith("\\?\\") and len(raw) >= 240:
+            return Path("\\?\\" + raw)
+    return resolved
 
 
 def _query_from_dict(data: dict[str, object]) -> AnchoredOracleQuery:
@@ -24,7 +34,7 @@ def _query_from_dict(data: dict[str, object]) -> AnchoredOracleQuery:
 
 def load_reasoning_examples(path: str | Path) -> list[ReasoningExample]:
     examples: list[ReasoningExample] = []
-    with Path(path).open("r", encoding="utf-8") as handle:
+    with _local_path(path).open("r", encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
             if not line:

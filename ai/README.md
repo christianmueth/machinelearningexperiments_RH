@@ -11,6 +11,8 @@ Scope for this section:
 
 The core engineering rule remains the same as the rest of the repo: learn around the oracle, not through it.
 
+For this workspace, "frozen oracle" means the canonical beta23 arithmetic backend, not the exploratory generic closure-bias families. Concretely, the AI layer wraps the beta23_plus_c path frozen into out/corrected_factor_injection_beta23_window_coefficients.csv and the downstream anchored A3 completed-object artifacts described in notes/BETA23_BACKEND_STRUCTURE.md.
+
 ## What already exists in the repo
 
 The main AI wrapper code is already in `src/ml_oracle/`:
@@ -36,6 +38,8 @@ For training and experimentation, use:
 - Weights & Biases
 
 The starter dependency file is [ai/requirements-training.txt](ai/requirements-training.txt).
+
+If you move generation to a remote GPU machine, use the repo-local checklist in [ai/REMOTE_GPU_SETUP.md](ai/REMOTE_GPU_SETUP.md). It keeps the scientific protocol unchanged while swapping only the compute environment.
 
 ## Suggested build architecture
 
@@ -81,6 +85,10 @@ To prepare a larger grouped dataset from a local JSONL file or a Hugging Face da
 
 That prep script shuffles candidate order to avoid positional leakage from always writing the correct trace first.
 
+To generate actual candidate traces from a frozen Hugging Face model instead of synthetic distractors, use [ai/scripts/generate_candidate_traces.py](ai/scripts/generate_candidate_traces.py).
+
+For the current structured-controller phase, the fixed local evaluation stack is [ai/scripts/run_structured_controller_pipeline.py](ai/scripts/run_structured_controller_pipeline.py). It runs the structure audit, position audit, grouped train/eval split, oracle-only baseline, oracle uncertainty report, safe oracle-first controller, and offline branch-feature analysis without changing the frozen oracle or the default controller policy. By default it also writes a checkpoint bundle under `out/ai/checkpoints/<artifact_prefix>/` so each larger structured run has one self-contained artifact directory.
+
 ## Benchmarks
 
 Benchmark definitions and the recommended evaluation matrix live in [ai/benchmarks/README.md](ai/benchmarks/README.md).
@@ -123,10 +131,14 @@ Example baseline commands:
 ```powershell
 python ai/scripts/prepare_reasoning_dataset.py --hf_dataset gsm8k --hf_subset main --hf_split train --prompt_field question --answer_field answer --limit 200 --out_jsonl ai/datasets/processed/gsm8k_train_candidates.jsonl
 python ai/scripts/prepare_reasoning_dataset.py --hf_dataset gsm8k --hf_subset main --hf_split test --prompt_field question --answer_field answer --limit 100 --out_jsonl ai/datasets/processed/gsm8k_test_candidates.jsonl
+python ai/scripts/generate_candidate_traces.py --hf_dataset gsm8k --hf_subset main --hf_split train --model google/flan-t5-small --limit 40 --num_candidates 6 --require_positive --out_jsonl ai/datasets/processed/gsm8k_flan_train_candidates.jsonl
+python ai/scripts/generate_candidate_traces.py --hf_dataset gsm8k --hf_subset main --hf_split test --model google/flan-t5-small --limit 20 --num_candidates 6 --require_positive --out_jsonl ai/datasets/processed/gsm8k_flan_test_candidates.jsonl
+python ai/scripts/run_structured_controller_pipeline.py --input_jsonl ai/datasets/processed/gsm8k_phi3mini_structuredsteps_probe25.jsonl --artifact_prefix gsm8k_phi3mini_structuredsteps_probe25
 python src/ml_oracle/train_reranker.py --dataset ai/datasets/templates/reasoning_rerank_template.jsonl --out_model out/ai/reranker_text_only.npz --feature_mode text --epochs 100
 python src/ml_oracle/train_reranker.py --dataset ai/datasets/templates/reasoning_rerank_template.jsonl --out_model out/ai/reranker_oracle_only.npz --feature_mode oracle --epochs 100
 python src/ml_oracle/train_reranker.py --dataset ai/datasets/templates/reasoning_rerank_template.jsonl --out_model out/ai/reranker_text_oracle.npz --feature_mode text+oracle --epochs 100
 python src/ml_oracle/train_reranker.py --dataset ai/datasets/processed/gsm8k_train_candidates.jsonl --out_model out/ai/reranker_distilbert_text_oracle.npz --feature_mode text+oracle --text_encoder hf --hf_model distilbert-base-uncased --epochs 30
+python ai/scripts/run_reranker_experiment.py --train_dataset ai/datasets/processed/gsm8k_flan_train_candidates.jsonl --eval_dataset ai/datasets/processed/gsm8k_flan_test_candidates.jsonl --out_json out/ai/gsm8k_flan_experiment.json --feature_modes text oracle text+oracle --text_encoder hashed --epochs 50
 ```
 
 Evaluation example:
@@ -136,6 +148,8 @@ python src/ml_oracle/eval_reranker.py --dataset ai/datasets/templates/reasoning_
 ```
 
 The evaluator now reports grouped Top-1 accuracy, MRR, and nDCG.
+
+The experiment runner in [ai/scripts/run_reranker_experiment.py](ai/scripts/run_reranker_experiment.py) automates the train/eval loop across feature modes and writes a JSON summary.
 
 The text side supports two modes:
 
